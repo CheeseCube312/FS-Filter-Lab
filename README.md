@@ -1,42 +1,75 @@
-I created this plotting tool for IR photography. No idea how to code. This was made by yelling at AI for a week.
+# FS FilterLab
+
+A web-based tool for analyzing and visualizing optical filter stacks, quantum efficiency curves, and illuminant spectra. Built with focus on Full-Spectrum photography. 
+
+## Features
+
+- Combine multiple filters and see the resulting transmission
+- View and compare RGB channel responses
+- Analyze how filters affect different cameras and light sources
+- Import your own filter, QE, or illuminant data (TSV format)
+- Export analysis as PNG images
+- Search and filter by manufacturer, color, or wavelength
+- Simple caching for faster data loading
+
+## Quick Start
+
+### Requirements
+- Python 3.8 or newer
+- pip
+
+### Install
+
+1. Clone this repository,
+   Or download the latest Release   
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+   Or use `install.bat` (Windows) or `install.sh` (Linux/macOS).
+3. Run the app:
+   ```bash
+   streamlit run app.py
+   ```
+   Or use `start.bat` (Windows) or `run.sh` (Linux/macOS).
+4. Open your browser to [http://localhost:8501](http://localhost:8501)
+
+## How to Use
+
+1. Select filters from the sidebar
+2. Adjust stack counts if needed
+3. Pick a camera QE profile and an illuminant
+4. See the results in the main area (charts, numbers, etc.)
+5. Download a PNG report if you want
+
+### Advanced
+- Use "Advanced Search" to filter by manufacturer, color, or transmission at a specific wavelength
+- Import your own data in the sidebar (TSV files)
+- Rebuild the cache if you add new data files
 
 
-What it does:
-It lets you load transmission data for camera filters and plots them. You can toggle a combined graph and display everything in logarithmic view. There also an opacity indicator above the graph that tells you how much the filter darkens the image. 
+## Project Structure
 
-"Apply sensor QE adjustment needs to be toggled on to get a fairly close match to real-world opacity values, stated in t-stops. It enables extra math that adjusts the stop value for sensor sensitivity at the given wavelengths. 
+```
+FS-FilterLab/
+├── app.py
+├── requirements.txt
+├── install.bat / install.sh
+├── start.bat / run.sh
+├── models/         # Data models
+├── services/       # Data processing and logic
+├── views/          # UI components
+├── data/           # Your spectral data files
+└── cache/          # Auto-generated cache
+```
 
+## Basic Troubleshooting
 
-_______________________________________________________________
+- Delete .venv, then run install.bat/.sh to re-install dependencies
+- Use "Rebuild Cache" in the sidebar if you add or change data files. Alternatively, manually delete the /cache folder
 
-Installation:
+## License
 
-1) Install Python 3.8 or higher. Make sure to Install to PATH (should be selectible in install wizard) https://www.python.org/
+MIT License. See LICENSE file.
 
-2) Run Install.bat
-
-Install.bat will download install all the necessary python libraries (found in Requirements.txt)
-
-After first install you can start with start.bat. It just starts the program with a virtual environment (venv)
-
-______________________________________________________________
-
-Adding/Removing data:
-
-Turn graphs into .csv files unsing WebPlotDigitizer: https://apps.automeris.io/wpd4/
-
-Use the Filter Importer for to turn Filters into the right format: https://github.com/CheeseCube312/CCube_WPB.csv_Filter-Importer
-Use the QE Importer for to turn Quantum Efficiency data into the right format: https://github.com/CheeseCube312/CCube_WPB.csv_QE-Importer/tree/main
-Just follow the instructions for those. :)
-
-______________________________________________________________
-Filter data format:
-The program is designed to use a folder full of individual .tsv files for each filter. Row 1 contains header, row 2 contains the data. The data range is 300-1100nm, in 5nm steps. The software can handle incomplete wavelength data.
-
-I've included a large collection of filters. Most was added by scraping the LeeFilter website since that data matches my swatchbook. Since I know that Lee Filters rise to ~90% transmission at 800nm and then stay there the data for them gets very roughly extrapolated by the software. 
-
-Some was added manually by running transmission graphs through WebPlotDigitizer. 
-
-Legal: See LICENSE.md
-
-Feedback is greatly appreciated. Contact info in Bio. 
+---

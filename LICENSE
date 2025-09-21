@@ -28,23 +28,10 @@ DATA:
 
 This program makes use of factual spectral data (e.g., filter transmission, illuminant spectra) that 
 was digitized from publicly available graphs and tables published by manufacturers, research institutions, 
-and standards bodies. I would like to thank the following organizations and individuals for their 
-contributions to open knowledge and transparency in the respective fields:
+and standards bodies. 
 
-Illuminants: 
-- NREL (National Renewable Energy Laboratory) 
-
-Quantum Efficiency:
-- Kolarivision.com - For publishing the "Generic CMOS Quantum Efficiency" data
-
-Filters:
-- Lee Filters  
-- Midwest Optical Systems Inc.  aka. "MidOpt"
-- Shijiazhuang Tang Snow Photoelectric Technology Co., Ltd. aka "Tangsinuo" 
-
-I also want to thank everyone who has contributed to this project, including those who have provided feedback, 
+I want to thank everyone who has contributed to this project, including those who have provided feedback, 
 provided data or requested features. Thank you for your support!
-
 
 Legal:
 
