@@ -1,4 +1,7 @@
-I created this plotting tool for IR photography by yelling at AI for a few weeks.
+FS Filter-Lab is an optical filter plotting tool, designed to let users plan full-spectrum filter stacks.
+
+It's goal is to make it easier to get into data-driven custom filter stack creation, especially for beginners,
+by offering a tool for well-visualized data creation.
 
 Features:
 - plot transmission data for camera filters
@@ -32,14 +35,8 @@ Adding/Removing data:
 
 Turn graphs into .csv files unsing WebPlotDigitizer: https://apps.automeris.io/wpd4/
 
-Use the Filter Importer for to turn Filters into the right format: https://github.com/CheeseCube312/CCube_WPB.csv_Filter-Importer
-Use the QE Importer for to turn Quantum Efficiency data into the right format: https://github.com/CheeseCube312/CCube_WPB.csv_QE-Importer/tree/main
-Just follow the instructions for those. :)
+Use the Filter Importers in the program to convert them into a usable format.
 
 ______________________________________________________________
 Filter data format:
-The program is designed to use a folder full of individual .tsv files for each filter. Row 1-4 contain filte information, row 5+ contains the transmission data. The data range is 300-1100nm, in 1nm steps. The software can handle incomplete wavelength data.
-
-I've included a large collection of filters. Some was added manually by running transmission graphs through WebPlotDigitizer. Legal info in LICENSE.md
-
-Have fun :) 
+It's getting changed with the most recent Refactor, currently still in the Beta/Testing branch. A data conversion script will be added shortly. 
