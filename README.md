@@ -2,7 +2,7 @@
 
 A web-based tool for analyzing and visualizing optical filter stacks, quantum efficiency curves, and illuminant spectra. Built with focus on Full-Spectrum photography. 
 
-# Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Preview feature she created
+## Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Preview feature she created
 
 ## Features
 
