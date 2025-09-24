@@ -148,13 +148,20 @@ def extras(
         selected_reflector_idx = None
         if reflector_collection and hasattr(reflector_collection, "reflectors") and reflector_collection.reflectors:
             reflector_names = [r.name for r in reflector_collection.reflectors]
-            selected_reflector_idx = st.selectbox(
+            # Add "None" option to allow hiding the single reflector preview
+            options = ["None"] + list(range(len(reflector_names)))
+            format_func = lambda i: "None" if i == "None" else reflector_names[i]
+            
+            selection = st.selectbox(
                 "Surface Reflectance Spectrum",
-                options=list(range(len(reflector_names))),
-                format_func=lambda i: reflector_names[i],
-                index=0,
+                options=options,
+                format_func=format_func,
+                index=0,  # Default to "None"
                 key="selected_reflector_idx"
             )
+            
+            # Convert "None" selection to None, keep numeric indices as-is
+            selected_reflector_idx = None if selection == "None" else selection
         else:
             st.info("No reflectance spectra found.")
 

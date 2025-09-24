@@ -443,7 +443,13 @@ def _render_sensor_analysis(app_state, data, selected_indices):
                 
             # Single reflector preview - get selected index from session state
             selected_reflector_idx = st.session_state.get("selected_reflector_idx", None)
-            if selected_reflector_idx is not None and selected_reflector_idx < len(reflector_matrix):
+            
+            # Handle both None and "None" string values, and ensure it's a valid integer index
+            if (selected_reflector_idx is not None and 
+                selected_reflector_idx != "None" and 
+                isinstance(selected_reflector_idx, int) and 
+                selected_reflector_idx < len(reflector_matrix)):
+                
                 single_color = compute_single_reflector_color(
                     reflector_matrix, selected_reflector_idx, trans_interp, 
                     app_state.current_qe, app_state.illuminant
