@@ -116,7 +116,7 @@ def transmission_metrics(
     
     # Display results
     st.markdown(
-        f"📉 **Estimated light loss ({metrics['label']}):** "
+        f"**Estimated light loss ({metrics['label']}):** "
         f"{metrics['effective_stops']} stops  \n"
         f"(Avg transmission: {metrics['avg_transmission_pct']})"
     )
@@ -149,7 +149,7 @@ def deviation_metrics(
     
     # Display metrics
     st.markdown(
-        f"📊 **Deviation from target ({formatted['target_name']}):**  \n"
+        f"**Deviation from target ({formatted['target_name']}):**  \n"
         f"- MAE: `{formatted['mae']}`  \n"
         f"- Bias: `{formatted['bias']}`  \n"
         f"- Max Dev: `{formatted['max_dev']}`  \n"
@@ -189,7 +189,7 @@ def raw_qe_and_illuminant(
     """Display raw QE curves and illuminant in Streamlit expander."""
     from services.visualization import create_qe_figure, create_illuminant_figure
     
-    with st.expander("📉 Show Raw QE and Illuminant Curves"):
+    with st.expander("Show Raw QE and Illuminant Curves"):
         if qe_data:
             fig_qe = create_qe_figure(interp_grid, qe_data, {"R": True, "G": True, "B": True})
             render_chart(
@@ -262,7 +262,8 @@ def render_main_content(app_state, data):
     from services.calculations import (
         is_reflector_data_valid,
         check_reflector_wavelength_validity, 
-        compute_reflector_preview_colors
+        compute_reflector_preview_colors,
+        compute_single_reflector_color
     )
     from views.forms import import_data_form
     from views.forms import advanced_filter_search
@@ -287,7 +288,7 @@ def render_main_content(app_state, data):
     # Header
     st.markdown("""
     <div style='display: flex; justify-content: space-between; align-items: center;'>
-        <h4 style='margin: 0;'>🔬 FS FilterLab</h4>
+        <h4 style='margin: 0;'>FS FilterLab</h4>
     </div>
     """, unsafe_allow_html=True)
     
@@ -374,12 +375,13 @@ def _render_sensor_analysis(app_state, data, selected_indices):
         create_sensor_response_plot
     )
     from models.constants import INTERP_GRID
-    from views.sidebar import reflector_preview
+    from views.sidebar import reflector_preview, single_reflector_preview, single_reflector_preview
     from views.ui_utils import show_warning_message, show_info_message
     from services.calculations import (
         is_reflector_data_valid,
         check_reflector_wavelength_validity,
-        compute_reflector_preview_colors
+        compute_reflector_preview_colors,
+        compute_single_reflector_color
     )
     
     # Extract data
@@ -416,7 +418,7 @@ def _render_sensor_analysis(app_state, data, selected_indices):
     new_apply_white_balance = sensor_response_display(fig_response, app_state.apply_white_balance)
     # Don't manually set state - it's widget-controlled now
     
-    # Reflector color preview
+    # Reflector color previews
     if (app_state.current_qe is not None and app_state.illuminant is not None and 
         hasattr(reflector_collection, 'reflector_matrix')):
         
@@ -426,6 +428,7 @@ def _render_sensor_analysis(app_state, data, selected_indices):
             if not check_reflector_wavelength_validity(reflector_matrix):
                 show_warning_message("Some reflector data appears incomplete. Check data files.")
             
+            # Vegetation preview (2x2 grid) - only if we have 4+ reflectors
             if len(reflector_matrix) >= 4:
                 pixels = compute_reflector_preview_colors(
                     reflector_matrix, trans_interp, app_state.current_qe, app_state.illuminant
@@ -434,9 +437,40 @@ def _render_sensor_analysis(app_state, data, selected_indices):
                 if pixels is not None:
                     reflector_preview(pixels)
                 else:
-                    show_warning_message("Unable to compute valid reflector colors")
+                    show_warning_message("Unable to compute valid vegetation colors")
             else:
-                show_info_message("Not enough reflector data for preview (need 4 spectra)")
+                show_info_message("Not enough reflector data for vegetation preview (need 4 spectra)")
+                
+            # Single reflector preview - get selected index from session state
+            selected_reflector_idx = st.session_state.get("selected_reflector_idx", None)
+            if selected_reflector_idx is not None and selected_reflector_idx < len(reflector_matrix):
+                single_color = compute_single_reflector_color(
+                    reflector_matrix, selected_reflector_idx, trans_interp, 
+                    app_state.current_qe, app_state.illuminant
+                )
+                
+                if single_color is not None:
+                    # Get reflector name
+                    reflector_name = reflector_collection.reflectors[selected_reflector_idx].name
+                    
+                    # Use the same global normalization scale as vegetation preview if available
+                    if pixels is not None:
+                        global_max = np.max(pixels)
+                    else:
+                        # If no vegetation preview, compute global max from all available reflectors
+                        all_colors = []
+                        for i in range(min(len(reflector_matrix), 4)):  # Check up to 4 reflectors
+                            color = compute_single_reflector_color(
+                                reflector_matrix, i, trans_interp,
+                                app_state.current_qe, app_state.illuminant
+                            )
+                            if color is not None:
+                                all_colors.append(color)
+                        global_max = np.max(all_colors) if all_colors else np.max(single_color)
+                    
+                    single_reflector_preview(single_color, reflector_name, global_max)
+                else:
+                    show_info_message("Unable to compute color for selected surface")
     
     # White balance display
     if app_state.current_qe and app_state.illuminant is not None:

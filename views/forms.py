@@ -130,7 +130,7 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
     if not st.session_state.get("advanced", False):
         return
 
-    st.markdown("### 🔍 Advanced Filter Search")
+    st.markdown("### Advanced Filter Search")
     st.markdown("Use the controls below to search by manufacturer, color, or spectral transmittance.")
 
     with st.form("adv_search_form"):
@@ -250,10 +250,10 @@ def import_data_form() -> None:
     Display data import UI with all import options.
     """
     st.markdown("---")
-    st.header("🛠 Import Data")
+    st.header("Import Data")
     
     # Create tabs for different import types
-    tab1, tab2, tab3, tab4 = st.tabs(["📟 Filters", "💡 Illuminants", "📸 Camera QE", "🌿 Reflectance"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Filters", "Illuminants", "Camera QE", "Reflectance"])
     
     with tab1:
         import_filter_tab()

@@ -66,7 +66,7 @@ def filter_multipliers(selected: List[str]) -> Dict[str, int]:
     """
     filter_multipliers = {}
     if selected:
-        with st.sidebar.expander("📦 Set Filter Stack Counts", expanded=False):
+        with st.sidebar.expander("Set Filter Stack Counts", expanded=False):
             for name in selected:
                 filter_multipliers[name] = st.number_input(
                     f"{name}",
@@ -185,7 +185,7 @@ def settings_panel(app_state) -> Tuple[bool, bool, Dict[str, bool]]:
         # Display options
         st.markdown("**Display Options**")
         log_view = st.checkbox(
-            "📊 Show stop-view (logarithmic)", 
+            "Show stop-view (logarithmic)", 
             help="Display transmission in camera stops (logarithmic scale) instead of percentage",
             key="sidebar_log_view_toggle"
         )
@@ -220,11 +220,50 @@ def reflector_preview(pixels: np.ndarray, reflector_names: Optional[List[str]] =
     # Display in the sidebar
     st.sidebar.subheader("Vegetation Color Preview")
     
-    # Normalize pixels for display if needed
-    pixels_normalized = pixels / np.max(pixels) if np.max(pixels) > 0 else pixels
+    # Normalize pixels for display (RGB values need to be in [0.0, 1.0] range)
+    max_val = np.max(pixels)
+    if max_val > 0:
+        pixels_normalized = np.clip(pixels / max_val, 0.0, 1.0)
+    else:
+        pixels_normalized = pixels
     
     # Display the image in the sidebar
     st.sidebar.image(pixels_normalized, width=300, channels="RGB", output_format="PNG")
+
+
+def single_reflector_preview(
+    pixel_color: np.ndarray, 
+    reflector_name: str,
+    global_max: float = None
+) -> None:
+    """
+    Display single reflector color preview in the sidebar.
+    
+    Args:
+        pixel_color: Single RGB color as 1x1x3 array
+        reflector_name: Name of the reflector
+        global_max: Global maximum value for consistent scaling (optional)
+    """
+    # Ensure pixel_color is a valid RGB array
+    if pixel_color.ndim != 3 or pixel_color.shape[2] != 3:
+        handle_error("Invalid pixel color format")
+        return
+    
+    # Display in the sidebar
+    st.sidebar.subheader("Surface Preview")
+    
+    # Use global max if provided, otherwise normalize individually
+    max_val = global_max if global_max is not None and global_max > 0 else np.max(pixel_color)
+    
+    # Normalize pixel for display (RGB values need to be in [0.0, 1.0] range)
+    if max_val > 0:
+        pixel_normalized = np.clip(pixel_color / max_val, 0.0, 1.0)
+    else:
+        pixel_normalized = pixel_color
+    
+    # Display the single color as a larger image
+    st.sidebar.image(pixel_normalized, width=200, channels="RGB", output_format="PNG")
+    st.sidebar.caption(f"Selected: {reflector_name}")
 
 
 def render_sidebar(app_state, data):
@@ -263,7 +302,7 @@ def render_sidebar(app_state, data):
     app_state.filter_multipliers = filter_multipliers_dict
     
     # QE, Illuminant, Target selection (using existing function from this module)
-    selected_illum_name, selected_illum, current_qe, selected_camera, target_profile, _ = extras(
+    selected_illum_name, selected_illum, current_qe, selected_camera, target_profile, selected_reflector_idx = extras(
         illuminants, illuminant_metadata,
         camera_keys, qe_data, default_key,
         filter_collection,
@@ -276,6 +315,7 @@ def render_sidebar(app_state, data):
     app_state.illuminant = selected_illum
     app_state.illuminant_name = selected_illum_name
     app_state.target_profile = target_profile
+    # Note: selected_reflector_idx is stored in session state by the widget, no need to store in app_state
     
     # Collect actions to return
     actions = {}

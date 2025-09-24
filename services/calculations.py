@@ -480,6 +480,48 @@ def compute_reflector_preview_colors(
     return pixels
 
 
+def compute_single_reflector_color(
+    reflector_matrix: np.ndarray,
+    selected_idx: int,
+    transmission: np.ndarray,
+    qe_data: Dict[str, np.ndarray],
+    illuminant: np.ndarray
+) -> Optional[np.ndarray]:
+    """
+    Compute color for a single selected reflector.
+    
+    Args:
+        reflector_matrix: Matrix of reflector data
+        selected_idx: Index of the selected reflector
+        transmission: Transmission values
+        qe_data: Quantum efficiency data
+        illuminant: Illuminant curve
+        
+    Returns:
+        Array with single RGB pixel value or None if computation failed
+    """
+    # Check if we have valid data and index
+    if (reflector_matrix is None or 
+        selected_idx is None or 
+        selected_idx >= len(reflector_matrix) or 
+        selected_idx < 0):
+        return None
+    
+    # Compute color for the selected reflector
+    reflector = reflector_matrix[selected_idx]
+    color = compute_reflector_color(reflector, transmission, qe_data, illuminant)
+    
+    # Replace any NaN values with zeros
+    color = np.nan_to_num(color)
+    
+    # Return None if all values are zero
+    if not np.any(color):
+        return None
+    
+    # Return as 1x1x3 array for image display
+    return color.reshape(1, 1, 3)
+
+
 def is_reflector_data_valid(reflector_collection: ReflectorCollection) -> bool:
     """
     Check if the reflector collection is valid for color preview.
