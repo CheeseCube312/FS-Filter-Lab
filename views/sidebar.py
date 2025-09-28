@@ -207,19 +207,21 @@ def settings_panel(app_state) -> Tuple[bool, bool, Dict[str, bool]]:
         # No manual state management needed - use st.session_state["sidebar_log_view_toggle"] instead
         
         # Rebuild Cache button
-        rebuild_cache = st.button("🔄 Rebuild Filter Cache")
+        rebuild_cache = st.button("🔄 Rebuild Cache")
             
-        # Import data button - make it a toggle to keep dialog open
-        if app_state.show_import_data:
+        # Import data toggle button using session state directly
+        if st.session_state.get('show_import_data', False):
             if st.button("✖️ Close Importers"):
-                return rebuild_cache, False, rgb_channels
-            else:
-                return rebuild_cache, True, rgb_channels  # Keep dialog open
+                st.session_state['show_import_data'] = False
+                st.rerun()
         else:
             if st.button("📊 WebPlotDigitizer .csv importers"):
-                return rebuild_cache, True, rgb_channels
+                st.session_state['show_import_data'] = True
+                st.rerun()
+        
+        show_import = st.session_state.get('show_import_data', False)
             
-    return False, False, rgb_channels
+    return rebuild_cache, show_import, rgb_channels
 
 
 def reflector_preview(pixels: np.ndarray, reflector_names: Optional[List[str]] = None) -> None:
@@ -352,8 +354,7 @@ def render_sidebar(app_state, data):
     # Settings Panel (using existing function from this module)
     rebuild_cache, show_import, rgb_channels = settings_panel(app_state)
     
-    # No need to manually update RGB channels - they're widget-controlled now
-    app_state.show_import_data = show_import
+    # No need to manually update RGB channels or show_import_data - they're widget-controlled now
     
     if rebuild_cache:
         actions['rebuild_cache'] = True

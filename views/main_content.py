@@ -448,19 +448,21 @@ def _render_sensor_analysis(app_state, data, selected_indices):
                     reflector_preview(pixels)
                 else:
                     show_warning_message(
-                        "⚠️ Vegetation Color Preview requires these exact files in data/reflectors/plant/:\n" +
-                        "• Leaf_1_reflectance_extrapolated_1100.tsv\n" +
-                        "• Leaf_2_reflectance_extrapolated_1100.tsv\n" +
-                        "• Leaf_3_reflectance_extrapolated_1100.tsv\n" +
-                        "• Leaf_4_reflectance_extrapolated_1100.tsv"
+                        "⚠️ Vegetation Color Preview requires these exact reflector names:\n" +
+                        "• Leaf 1\n" +
+                        "• Leaf 2\n" +
+                        "• Leaf 3\n" +
+                        "• Leaf 4\n" +
+                        "Make sure the TSV files have a 'Name' column with these exact values."
                     )
             else:
                 show_warning_message(
-                    "⚠️ Vegetation Color Preview requires these exact files in data/reflectors/plant/:\n" +
-                    "• Leaf_1_reflectance_extrapolated_1100.tsv\n" +
-                    "• Leaf_2_reflectance_extrapolated_1100.tsv\n" +
-                    "• Leaf_3_reflectance_extrapolated_1100.tsv\n" +
-                    "• Leaf_4_reflectance_extrapolated_1100.tsv"
+                    "⚠️ Vegetation Color Preview requires these exact reflector names:\n" +
+                    "• Leaf 1\n" +
+                    "• Leaf 2\n" +
+                    "• Leaf 3\n" +
+                    "• Leaf 4\n" +
+                    "Make sure the TSV files have a 'Name' column with these exact values."
                 )
                 
             # Single reflector preview - get selected index from session state

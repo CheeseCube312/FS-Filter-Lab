@@ -86,14 +86,13 @@ class StateManager:
             'last_export': {},
             
             # UI state (non-widget controlled)
-            'show_import_data': False,
             'import_status': None,
             'import_error_message': None,
         }
         
         # Widget-controlled keys (managed by Streamlit widgets, don't initialize manually)
         widget_keys = {
-            'selected_filters', 'show_advanced_search', 'sidebar_log_view_toggle',
+            'selected_filters', 'show_advanced_search', 'show_import_data', 'sidebar_log_view_toggle',
             'apply_white_balance_toggle', 'show_R', 'show_G', 'show_B', 'show_channel_mixer'
         }
         
@@ -164,7 +163,6 @@ class StateManager:
             'white_balance_gains': DEFAULT_WB_GAINS.copy(),
             # Note: channel_mixer is now handled dynamically via _build_live_channel_mixer()
             'last_export': {},
-            'show_import_data': False,
         }
         
         # Handle special cases for widget-controlled state
@@ -172,6 +170,8 @@ class StateManager:
             return st.session_state.get('sidebar_log_view_toggle', False)
         elif name == 'show_advanced_search':
             return st.session_state.get('show_advanced_search', False)
+        elif name == 'show_import_data':
+            return st.session_state.get('show_import_data', False)
         elif name == 'apply_white_balance':
             return st.session_state.get('apply_white_balance_toggle', False)
         elif name == 'rgb_channels_visibility':
@@ -204,6 +204,7 @@ class StateManager:
             widget_keys = {
                 'log_view': 'sidebar_log_view_toggle', 
                 'show_advanced_search': 'show_advanced_search',
+                'show_import_data': 'show_import_data',
                 'apply_white_balance': 'apply_white_balance_toggle',
                 'rgb_channels_visibility': None  # Special case - managed by individual keys
             }
@@ -276,13 +277,13 @@ class StateManager:
         self.combined_transmission = None
         self.white_balance_gains = DEFAULT_WB_GAINS.copy()
         self.last_export = {}
-        self.show_import_data = False
         self.import_status = None
         self.import_error_message = None
         
         # Reset widget-controlled state directly in session_state
         st.session_state['sidebar_log_view_toggle'] = False
         st.session_state['show_advanced_search'] = False
+        st.session_state['show_import_data'] = False
         st.session_state['apply_white_balance_toggle'] = False
         st.session_state['show_R'] = True
         st.session_state['show_G'] = True  

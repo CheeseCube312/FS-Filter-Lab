@@ -69,8 +69,8 @@ CHANNEL_MIXER_STEP = 0.01          # Step size for channel mixing sliders
 
 # Vegetation Preview Constants
 VEGETATION_PREVIEW_FILES = [
-    "Leaf_1_reflectance_extrapolated_1100",
-    "Leaf_2_reflectance_extrapolated_1100",
-    "Leaf_3_reflectance_extrapolated_1100",
-    "Leaf_4_reflectance_extrapolated_1100"
-]  # Exact filenames required for vegetation preview (2x2 grid)
+    "Leaf 1",
+    "Leaf 2",
+    "Leaf 3",
+    "Leaf 4"
+]  # Exact reflector names required for vegetation preview (2x2 grid)
