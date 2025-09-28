@@ -444,6 +444,14 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     # Interpolate to standard grid
     interp_vals = np.interp(INTERP_GRID, wl, refl, left=np.nan, right=np.nan)
     
+    # Normalize reflectance units: if values look like percents (>1.5), convert to fraction [0..1]
+    # This handles existing files that may have been imported before normalization was added
+    if np.nanmax(interp_vals) > 1.5:
+        interp_vals = interp_vals / 100.0
+    
+    # Round to 3 decimal places to avoid floating point precision issues
+    interp_vals = np.round(interp_vals, 3)
+    
     return name, interp_vals
 
 

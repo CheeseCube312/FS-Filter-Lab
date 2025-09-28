@@ -594,13 +594,27 @@ def import_reflectance_absorption_from_csv(uploaded_file, meta, extrap_lower, ex
             extrap_lower, extrap_upper
         )
 
+        # Normalize reflectance units: if values look like percents (>1.5), convert to fraction [0..1]
+        if np.nanmax(interpolated) > 1.5:
+            interpolated = interpolated / 100.0
+
+        # Round to 3 decimal places to avoid floating point precision issues
+        interpolated = np.round(interpolated, 3)
+
         # Create DataFrame
         data_type = meta.get("data_type", "Reflectance")
+        
+        # Create name and description arrays - only fill the first row, leave others empty
+        name_array = [""] * len(new_wavelengths)
+        description_array = [""] * len(new_wavelengths)
+        name_array[0] = meta.get("name", "Unknown")  # Only first row gets the name
+        description_array[0] = meta.get("description", "")  # Only first row gets the description
+        
         output_df = pd.DataFrame({
             'Wavelength': new_wavelengths,
             data_type: interpolated,
-            'Name': meta.get("name", "Unknown"),
-            'Description': meta.get("description", "")
+            'Name': name_array,
+            'Description': description_array
         })
 
         # Save file
