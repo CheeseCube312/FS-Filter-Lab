@@ -15,8 +15,9 @@ import re
 import pandas as pd
 import logging
 from typing import Dict, Any, Optional, List, Tuple, Union, TypeVar, Callable
-from models.core import TargetProfile
+
 from models.constants import DEFAULT_WB_GAINS
+from models.core import TargetProfile
 
 # Configure logging for error tracking
 logging.basicConfig(

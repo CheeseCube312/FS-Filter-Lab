@@ -213,7 +213,7 @@ def generate_application_report(
         return False
         
     # Get filter transmission
-    transmission = compute_filter_transmission(selected_indices, filter_collection.filter_matrix)
+    transmission, transmission_label, combined_transmission = compute_filter_transmission(selected_indices, filter_collection.filter_matrix)
     
     if transmission is None:
         return False

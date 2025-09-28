@@ -8,8 +8,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Any, Optional
 
-from views.ui_utils import is_dark_color, is_valid_hex_color, handle_error
 from models.constants import INTERP_GRID
+from views.ui_utils import is_dark_color, is_valid_hex_color, handle_error
 from services.visualization import create_sparkline_plot
 
 
@@ -127,7 +127,8 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
         df: DataFrame of filters
         filter_matrix: Matrix of filter transmission values
     """
-    if not st.session_state.get("advanced", False):
+    # Check if advanced search is enabled (controlled by sidebar toggle)
+    if not st.session_state.get("show_advanced_search", False):
         return
 
     st.markdown("### Advanced Filter Search")
@@ -248,12 +249,22 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
 def import_data_form() -> None:
     """
     Display data import UI with all import options.
+    
+    This form provides a comprehensive interface for importing various types
+    of spectral data into the application with improved error handling,
+    validation, and user feedback.
     """
     st.markdown("---")
-    st.header("Import Data")
+    st.header("📊 Import Data")
+    
+    # Add general information
+    st.info("""
+    🎯 **Import your own spectral data** from WebPlotDigitizer or other sources.  
+    All data will be automatically interpolated to the standard 300-1100nm grid.
+    """)
     
     # Create tabs for different import types
-    tab1, tab2, tab3, tab4 = st.tabs(["Filters", "Illuminants", "Camera QE", "Reflectance"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Filters", "💡 Illuminants", "📷 Camera QE", "🌿 Reflectance"])
     
     with tab1:
         import_filter_tab()
@@ -275,40 +286,113 @@ def import_filter_tab():
     st.subheader("Import Filter Data")
     st.write("Upload CSV files with Wavelength (nm) and Transmittance columns.")
     
-    uploaded_file = st.file_uploader("Choose CSV file", type="csv", key="filter_upload")
+    # Add file format help
+    with st.expander("📄 File Format Help"):
+        st.write("""
+        **Expected CSV format:**
+        - First column: Wavelength (nm) 
+        - Second column: Transmittance (0-100% or 0-1)
+        - No headers required
+        - Supported separators: comma (,) or semicolon (;)
+        
+        **Example:**
+        ```
+        400,85.2
+        450,82.1
+        500,78.5
+        ...
+        ```
+        """)
+    
+    uploaded_file = st.file_uploader(
+        "Choose CSV file", 
+        type="csv", 
+        key="filter_upload",
+        help="Select a CSV file with wavelength and transmittance data"
+    )
     
     if uploaded_file is not None:
+        # Show file info
+        st.info(f"📁 File: {uploaded_file.name} ({uploaded_file.size} bytes)")
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            manufacturer = st.text_input("Manufacturer", value="Custom")
-            filter_name = st.text_input("Filter Name", value="Custom Filter")
+            manufacturer = st.text_input(
+                "Manufacturer", 
+                value="Custom",
+                help="Filter manufacturer name"
+            )
+            filter_name = st.text_input(
+                "Filter Name", 
+                value="Custom Filter",
+                help="Descriptive name for the filter"
+            )
         
         with col2:
-            filter_number = st.text_input("Filter Number", value="001")
-            hex_color = st.color_picker("Filter Color", value="#808080")
+            filter_number = st.text_input(
+                "Filter Number", 
+                value="001",
+                help="Filter model/part number"
+            )
+            hex_color = st.color_picker(
+                "Filter Color", 
+                value="#808080",
+                help="Representative color for the filter"
+            )
         
         col3, col4 = st.columns(2)
         with col3:
-            extrap_lower = st.checkbox("Extrapolate to 300nm", value=False)
+            extrap_lower = st.checkbox(
+                "Extrapolate to 300nm", 
+                value=False,
+                help="Extend data to 300nm using interpolation"
+            )
         with col4:
-            extrap_upper = st.checkbox("Extrapolate to 1100nm", value=False)
+            extrap_upper = st.checkbox(
+                "Extrapolate to 1100nm", 
+                value=False,
+                help="Extend data to 1100nm using interpolation"
+            )
         
-        if st.button("Import Filter", type="primary"):
-            meta = {
-                "manufacturer": manufacturer,
-                "filter_name": filter_name,
-                "filter_number": filter_number,
-                "hex_color": hex_color
-            }
+        # Validate inputs
+        can_import = True
+        validation_errors = []
+        
+        if not manufacturer.strip():
+            validation_errors.append("Manufacturer cannot be empty")
+            can_import = False
             
-            success, message = import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper)
+        if not filter_name.strip():
+            validation_errors.append("Filter name cannot be empty")
+            can_import = False
             
-            if success:
-                st.success(message)
-                st.info("Please refresh the page to see the new filter in the list.")
-            else:
-                handle_error(message)
+        if not filter_number.strip():
+            validation_errors.append("Filter number cannot be empty")
+            can_import = False
+            
+        # Show validation errors
+        if validation_errors:
+            for error in validation_errors:
+                st.error(f"⚠️ {error}")
+        
+        if st.button("Import Filter", type="primary", disabled=not can_import):
+            with st.spinner("Importing filter data..."):
+                meta = {
+                    "manufacturer": manufacturer.strip(),
+                    "filter_name": filter_name.strip(),
+                    "filter_number": filter_number.strip(),
+                    "hex_color": hex_color
+                }
+                
+                success, message = import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper)
+                
+                if success:
+                    st.success(f"✅ {message}")
+                    st.info("💡 Please refresh the page to see the new filter in the list.")
+                else:
+                    st.error(f"❌ Import failed: {message}")
+                    st.info("💡 Please check your file format and try again.")
 
 
 def import_illuminant_tab():
@@ -318,19 +402,61 @@ def import_illuminant_tab():
     st.subheader("Import Illuminant Data")
     st.write("Upload CSV files with Wavelength (nm) and Relative Power columns.")
     
-    uploaded_file = st.file_uploader("Choose CSV file", type="csv", key="illuminant_upload")
+    # Add file format help
+    with st.expander("📄 File Format Help"):
+        st.write("""
+        **Expected CSV format:**
+        - First column: Wavelength (nm)
+        - Second column: Relative Power or Intensity
+        - No headers required
+        - Values will be normalized to 0-100 scale
+        
+        **Example:**
+        ```
+        380,0.1
+        400,1.5
+        500,10.2
+        ...
+        ```
+        """)
+    
+    uploaded_file = st.file_uploader(
+        "Choose CSV file", 
+        type="csv", 
+        key="illuminant_upload",
+        help="Select a CSV file with wavelength and illuminant power data"
+    )
     
     if uploaded_file is not None:
-        description = st.text_input("Description", value="Custom Illuminant")
+        # Show file info
+        st.info(f"📁 File: {uploaded_file.name} ({uploaded_file.size} bytes)")
         
-        if st.button("Import Illuminant", type="primary"):
-            success, message = import_illuminant_from_csv(uploaded_file, description)
+        description = st.text_input(
+            "Description", 
+            value="Custom Illuminant",
+            help="Descriptive name for this illuminant"
+        )
+        
+        # Validate inputs
+        can_import = True
+        if not description.strip():
+            st.error("⚠️ Description cannot be empty")
+            can_import = False
             
-            if success:
-                st.success(message)
-                st.info("Please refresh the page to see the new illuminant in the list.")
-            else:
-                handle_error(message)
+        if len(description.strip()) > 50:
+            st.error("⚠️ Description too long (max 50 characters)")
+            can_import = False
+        
+        if st.button("Import Illuminant", type="primary", disabled=not can_import):
+            with st.spinner("Importing illuminant data..."):
+                success, message = import_illuminant_from_csv(uploaded_file, description.strip())
+                
+                if success:
+                    st.success(f"✅ {message}")
+                    st.info("💡 Please refresh the page to see the new illuminant in the list.")
+                else:
+                    st.error(f"❌ Import failed: {message}")
+                    st.info("💡 Please check your file format and try again.")
 
 
 def import_qe_tab():
@@ -340,24 +466,79 @@ def import_qe_tab():
     st.subheader("Import Camera QE Data")
     st.write("Upload CSV files with Wavelength (nm), R, G, B columns.")
     
-    uploaded_file = st.file_uploader("Choose CSV file", type="csv", key="qe_upload")
+    # Add file format help
+    with st.expander("📄 File Format Help"):
+        st.write("""
+        **Expected CSV format:**
+        - First column: Wavelength (nm)
+        - Second column: R channel quantum efficiency
+        - Third column: G channel quantum efficiency  
+        - Fourth column: B channel quantum efficiency
+        - No headers required
+        - Values typically 0-1 or 0-100
+        
+        **Example:**
+        ```
+        400,0.1,0.05,0.8
+        450,0.2,0.15,0.7
+        500,0.3,0.85,0.2
+        ...
+        ```
+        """)
+    
+    uploaded_file = st.file_uploader(
+        "Choose CSV file", 
+        type="csv", 
+        key="qe_upload",
+        help="Select a CSV file with wavelength and RGB QE data"
+    )
     
     if uploaded_file is not None:
+        # Show file info
+        st.info(f"📁 File: {uploaded_file.name} ({uploaded_file.size} bytes)")
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            brand = st.text_input("Camera Brand", value="Custom")
+            brand = st.text_input(
+                "Camera Brand", 
+                value="Custom",
+                help="Camera manufacturer name"
+            )
         with col2:
-            model = st.text_input("Camera Model", value="Custom Model")
+            model = st.text_input(
+                "Camera Model", 
+                value="Custom Model",
+                help="Camera model name"
+            )
         
-        if st.button("Import Camera QE", type="primary"):
-            success, message = import_qe_from_csv(uploaded_file, brand, model)
+        # Validate inputs
+        can_import = True
+        validation_errors = []
+        
+        if not brand.strip():
+            validation_errors.append("Camera brand cannot be empty")
+            can_import = False
             
-            if success:
-                st.success(message)
-                st.info("Please refresh the page to see the new camera in the list.")
-            else:
-                handle_error(message)
+        if not model.strip():
+            validation_errors.append("Camera model cannot be empty")
+            can_import = False
+        
+        # Show validation errors
+        if validation_errors:
+            for error in validation_errors:
+                st.error(f"⚠️ {error}")
+        
+        if st.button("Import Camera QE", type="primary", disabled=not can_import):
+            with st.spinner("Importing camera QE data..."):
+                success, message = import_qe_from_csv(uploaded_file, brand.strip(), model.strip())
+                
+                if success:
+                    st.success(f"✅ {message}")
+                    st.info("💡 Please refresh the page to see the new camera in the list.")
+                else:
+                    st.error(f"❌ Import failed: {message}")
+                    st.info("💡 Please check your file format and try again.")
 
 
 def import_reflectance_tab():
@@ -367,39 +548,112 @@ def import_reflectance_tab():
     st.subheader("Import Reflectance/Absorption Data")
     st.write("Upload CSV files with Wavelength (nm) and Reflectance/Absorption columns.")
     
-    uploaded_file = st.file_uploader("Choose CSV file", type="csv", key="reflectance_upload")
+    # Add file format help
+    with st.expander("📄 File Format Help"):
+        st.write("""
+        **Expected CSV format:**
+        - First column: Wavelength (nm)
+        - Second column: Reflectance or Absorption values
+        - No headers required
+        - Supported separators: comma (,) or semicolon (;)
+        
+        **Example:**
+        ```
+        400,0.05
+        450,0.12
+        500,0.25
+        ...
+        ```
+        """)
+    
+    uploaded_file = st.file_uploader(
+        "Choose CSV file", 
+        type="csv", 
+        key="reflectance_upload",
+        help="Select a CSV file with wavelength and reflectance/absorption data"
+    )
     
     if uploaded_file is not None:
+        # Show file info
+        st.info(f"📁 File: {uploaded_file.name} ({uploaded_file.size} bytes)")
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            name = st.text_input("Spectrum Name", value="Custom Spectrum")
-            data_type = st.selectbox("Data Type", ["Reflectance", "Absorption"])
+            name = st.text_input(
+                "Spectrum Name", 
+                value="Custom Spectrum",
+                help="Name for this spectrum (will be used in filename)"
+            )
+            data_type = st.selectbox(
+                "Data Type", 
+                ["Reflectance", "Absorption"],
+                help="Type of spectral data"
+            )
         
         with col2:
-            category = st.selectbox("Category", ["Plant", "Other"])
-            description = st.text_area("Description", value="")
+            category = st.selectbox(
+                "Category", 
+                ["Plant", "Other"],
+                help="Category for organizing spectra"
+            )
+            description = st.text_area(
+                "Description", 
+                value="",
+                help="Optional description of the spectrum"
+            )
         
         col3, col4 = st.columns(2)
         with col3:
-            extrap_lower = st.checkbox("Extrapolate to 300nm", value=False, key="refl_extrap_lower")
-        with col4:
-            extrap_upper = st.checkbox("Extrapolate to 1100nm", value=False, key="refl_extrap_upper")
-        
-        if st.button("Import Spectrum", type="primary"):
-            meta = {
-                "name": name,
-                "data_type": data_type,
-                "category": category,
-                "description": description
-            }
-            
-            success, message = import_reflectance_absorption_from_csv(
-                uploaded_file, meta, extrap_lower, extrap_upper
+            extrap_lower = st.checkbox(
+                "Extrapolate to 300nm", 
+                value=False, 
+                key="refl_extrap_lower",
+                help="Extend data to 300nm using interpolation"
             )
+        with col4:
+            extrap_upper = st.checkbox(
+                "Extrapolate to 1100nm", 
+                value=False, 
+                key="refl_extrap_upper",
+                help="Extend data to 1100nm using interpolation"
+            )
+        
+        # Validate inputs before import
+        can_import = True
+        validation_errors = []
+        
+        if not name.strip():
+            validation_errors.append("Spectrum name cannot be empty")
+            can_import = False
             
-            if success:
-                st.success(message)
-                st.info("Please refresh the page to see the new spectrum in the reflector preview.")
-            else:
-                handle_error(message)
+        if len(name.strip()) > 50:
+            validation_errors.append("Spectrum name too long (max 50 characters)")
+            can_import = False
+        
+        # Show validation errors
+        if validation_errors:
+            for error in validation_errors:
+                st.error(f"⚠️ {error}")
+        
+        if st.button("Import Spectrum", type="primary", disabled=not can_import):
+            with st.spinner("Importing spectrum data..."):
+                meta = {
+                    "name": name.strip(),
+                    "data_type": data_type,
+                    "category": category,
+                    "description": description.strip()
+                }
+                
+                success, message = import_reflectance_absorption_from_csv(
+                    uploaded_file, meta, extrap_lower, extrap_upper
+                )
+                
+                if success:
+                    st.success(f"✅ {message}")
+                    st.info("💡 Please refresh the page to see the new spectrum in the reflector preview.")
+                    # Keep the import dialog open so user can see the success message
+                else:
+                    st.error(f"❌ Import failed: {message}")
+                    st.info("💡 Please check your file format and try again. Use the 'File Format Help' above for guidance.")
+                    # Keep the dialog open so user can see the error and retry

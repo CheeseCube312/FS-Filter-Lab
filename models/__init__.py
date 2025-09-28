@@ -13,6 +13,9 @@ from models.core import (
     FilterCollection,
     TargetProfile,
     
+    # Channel Mixer
+    ChannelMixerSettings,
+    
     # Reflector Models
     ReflectorSpectrum,
     ReflectorCollection,

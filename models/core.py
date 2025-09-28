@@ -147,6 +147,72 @@ class TargetProfile:
         return self.name
 
 
+@dataclass
+class ChannelMixerSettings:
+    """
+    Channel mixer transformation settings for RGB channel manipulation.
+    
+    Implements Photoshop-style channel mixing where each output channel is a
+    linear combination of the input RGB channels. Commonly used in IR photography
+    for channel swapping and false color enhancement.
+    
+    Mathematical representation:
+        R_out = R_in * red_r + G_in * red_g + B_in * red_b
+        G_out = R_in * green_r + G_in * green_g + B_in * green_b  
+        B_out = R_in * blue_r + G_in * blue_g + B_in * blue_b
+    
+    Attributes:
+        red_r, red_g, red_b: Contributions to red output channel
+        green_r, green_g, green_b: Contributions to green output channel
+        blue_r, blue_g, blue_b: Contributions to blue output channel
+        enabled: Whether channel mixing is currently active
+    """
+    # Red output channel = R*red_r + G*red_g + B*red_b
+    red_r: float = 1.0    # Red contribution to red output
+    red_g: float = 0.0    # Green contribution to red output  
+    red_b: float = 0.0    # Blue contribution to red output
+    
+    # Green output channel = R*green_r + G*green_g + B*green_b
+    green_r: float = 0.0  # Red contribution to green output
+    green_g: float = 1.0  # Green contribution to green output
+    green_b: float = 0.0  # Blue contribution to green output
+    
+    # Blue output channel = R*blue_r + G*blue_g + B*blue_b
+    blue_r: float = 0.0   # Red contribution to blue output
+    blue_g: float = 0.0   # Green contribution to blue output
+    blue_b: float = 1.0   # Blue contribution to blue output
+    
+    enabled: bool = False # Whether channel mixing is active
+    
+    def to_matrix(self) -> np.ndarray:
+        """
+        Convert channel mixer settings to 3x3 transformation matrix.
+        
+        Returns:
+            3x3 NumPy array where each row represents output channel weights
+        """
+        return np.array([
+            [self.red_r, self.red_g, self.red_b],      # Red output weights
+            [self.green_r, self.green_g, self.green_b], # Green output weights  
+            [self.blue_r, self.blue_g, self.blue_b]    # Blue output weights
+        ])
+    
+    def from_dict(self, settings_dict: Dict[str, Any]) -> None:
+        """Update settings from dictionary (for preset loading)."""
+        for key, value in settings_dict.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert settings to dictionary (for preset saving)."""
+        return {
+            'red_r': self.red_r, 'red_g': self.red_g, 'red_b': self.red_b,
+            'green_r': self.green_r, 'green_g': self.green_g, 'green_b': self.green_b,
+            'blue_r': self.blue_r, 'blue_g': self.blue_g, 'blue_b': self.blue_b,
+            'enabled': self.enabled
+        }
+
+
 # Reflector Models
 @dataclass
 class ReflectorSpectrum:

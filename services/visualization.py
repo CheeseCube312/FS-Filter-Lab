@@ -6,8 +6,8 @@ This module provides all visualization functionality including:
 - Static report generation with Matplotlib  
 - Chart creation and styling utilities
 - PNG report generation
+- Channel mixer visualization support
 """
-
 import io
 import os
 import numpy as np
@@ -18,6 +18,9 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Rectangle
 import streamlit as st
 from typing import List, Dict, Optional, Any, Callable, Tuple
+
+from models.core import ChannelMixerSettings
+from services.channel_mixer import apply_channel_mixing_to_matrix
 
 # ============================================================================
 # MATPLOTLIB REPORT GENERATION
@@ -342,13 +345,16 @@ def create_sensor_response_plot(
     visible_channels: Dict[str, bool],
     white_balance_gains: Dict[str, float],
     apply_white_balance: bool,
-    target_profile: Optional[Any]
+    target_profile: Optional[Any],
+    channel_mixer: Optional[ChannelMixerSettings] = None
 ) -> go.Figure:
-    """Create a plotly figure showing sensor response."""
+    """Create a plotly figure showing sensor response with optional channel mixing."""
     fig = go.Figure()
     
     colors = {'R': 'red', 'G': 'green', 'B': 'blue'}
     
+    # First, compute all responses
+    responses = {}
     for channel, qe_curve in qe_data.items():
         if not visible_channels.get(channel, True):
             continue
@@ -362,6 +368,15 @@ def create_sensor_response_plot(
             # White balance gains represent response ratios, so we need the inverse to balance
             response = response / wb_gain
         
+        responses[channel] = response
+    
+    # Apply channel mixing if enabled
+    if channel_mixer is not None and channel_mixer.enabled and responses:
+        from services.channel_mixer import apply_channel_mixing_to_responses
+        responses = apply_channel_mixing_to_responses(responses, channel_mixer)
+    
+    # Plot the (potentially mixed) responses
+    for channel, response in responses.items():
         fig.add_trace(go.Scatter(
             x=interp_grid,
             y=response,
@@ -371,13 +386,92 @@ def create_sensor_response_plot(
             showlegend=True
         ))
     
+    # Add spectrum strip if we have RGB data
+    if len(responses) >= 3 and 'R' in responses and 'G' in responses and 'B' in responses:
+        # Create RGB matrix for spectrum strip (same as PNG report)
+        rgb_matrix = np.stack([
+            responses.get('R', np.zeros_like(interp_grid)),
+            responses.get('G', np.zeros_like(interp_grid)),
+            responses.get('B', np.zeros_like(interp_grid))
+        ], axis=1)
+        
+        # Normalize RGB matrix
+        max_val = np.nanmax(rgb_matrix)
+        # Handle NaN and infinity values  
+        rgb_matrix = np.nan_to_num(rgb_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+        if max_val > 0 and np.isfinite(max_val):
+            rgb_matrix = rgb_matrix / max_val
+        
+        # Clip to valid RGB range [0, 1]
+        rgb_matrix = np.clip(rgb_matrix, 0.0, 1.0)
+        
+        # Find the maximum response for positioning the spectrum strip
+        max_response = 1.0
+        for response in responses.values():
+            if response is not None and len(response) > 0:
+                clean_response = np.nan_to_num(response, nan=0.0, posinf=0.0, neginf=0.0)
+                response_max = np.max(clean_response)
+                if np.isfinite(response_max) and response_max > max_response:
+                    max_response = response_max
+        
+        # Convert RGB matrix to format suitable for Plotly (need to create an image)
+        # Create spectrum strip as a thin horizontal band
+        spectrum_height = max_response * 0.05  # 5% of max response height
+        spectrum_y_pos = max_response * 1.02   # Position slightly above the curves
+        
+        # Convert RGB values to safe integer colors for heatmap
+        rgb_colors_normalized = rgb_matrix * 255.0
+        rgb_colors_int = np.clip(rgb_colors_normalized, 0, 255).astype(int)
+        
+        # Create a simple color strip using scatter plot for better compatibility
+        # Create color strings, ensuring all values are valid
+        colors = []
+        for i in range(len(interp_grid)):
+            r = max(0, min(255, int(rgb_colors_int[i, 0])))
+            g = max(0, min(255, int(rgb_colors_int[i, 1])))  
+            b = max(0, min(255, int(rgb_colors_int[i, 2])))
+            colors.append(f'rgb({r},{g},{b})')
+            
+        fig.add_trace(go.Scatter(
+            x=interp_grid,
+            y=[spectrum_y_pos] * len(interp_grid),
+            mode='markers',
+            marker=dict(
+                size=9,
+                color=colors,
+                line=dict(width=0),
+                symbol='square'
+            ),
+            showlegend=False,
+            name='Spectrum',
+            hovertemplate='Wavelength: %{x} nm<br>RGB: %{marker.color}<extra></extra>'
+        ))
+    
+    # Add target profile if provided
+    if target_profile is not None:
+        fig.add_trace(go.Scatter(
+            x=interp_grid,
+            y=target_profile.values,
+            mode='lines',
+            name=f'Target: {target_profile.name}',
+            line=dict(color='black', width=2, dash='dash'),
+            showlegend=True
+        ))
+    
+    # Update title to reflect current state
+    wb_status = " (White Balanced)" if apply_white_balance else ""
+    mixer_status = " (Channel Mixed)" if (channel_mixer and channel_mixer.enabled) else ""
+    
+    # Determine final height - if spectrum strip is present, add space for it
+    plot_height = 450 if len(responses) >= 3 else 400
+    
     # Update layout
     fig.update_layout(
-        title="Sensor Response",
+        title=f"Sensor Response{wb_status}{mixer_status}",
         xaxis_title="Wavelength (nm)",
         yaxis_title="Response",
         template="plotly_white",
-        height=400,
+        height=plot_height,
         hovermode='x unified'
     )
     
@@ -504,3 +598,50 @@ def create_illuminant_figure(
     )
     
     return fig
+
+
+def prepare_rgb_for_display(
+    rgb_values: np.ndarray,
+    saturation_level: float = 1.0,
+    auto_exposure: bool = True
+) -> np.ndarray:
+    """
+    Prepare RGB values for display with camera-realistic normalization.
+    
+    This function mimics real camera sensor behavior where each channel
+    saturates independently, rather than scaling all channels together.
+    
+    Args:
+        rgb_values: RGB array of any shape with last dimension = 3
+        saturation_level: Maximum sensor response level (default 1.0)
+        auto_exposure: If True, scale to use full dynamic range
+        
+    Returns:
+        RGB array normalized for display in range [0.0, 1.0]
+    """
+    # Handle negative values by clamping to zero (like real sensors)
+    rgb_clamped = np.maximum(rgb_values, 0.0)
+    
+    if auto_exposure:
+        # Auto-exposure: scale to use full dynamic range without clipping
+        # Find the maximum value that would cause any channel to saturate
+        max_val = np.max(rgb_clamped)
+        if max_val > 0:
+            # Scale so the brightest pixel reaches saturation_level
+            exposure_scale = saturation_level / max_val
+            rgb_exposed = rgb_clamped * exposure_scale
+        else:
+            rgb_exposed = rgb_clamped
+    else:
+        rgb_exposed = rgb_clamped
+    
+    # Apply sensor saturation: each channel clips independently
+    rgb_saturated = np.minimum(rgb_exposed, saturation_level)
+    
+    # Final normalization for display (0-1 range)
+    if saturation_level > 0:
+        rgb_normalized = rgb_saturated / saturation_level
+    else:
+        rgb_normalized = np.zeros_like(rgb_saturated)
+    
+    return np.clip(rgb_normalized, 0.0, 1.0)

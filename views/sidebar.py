@@ -8,8 +8,8 @@ import streamlit as st
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 
+from models.constants import CACHE_DIR, DEFAULT_ILLUMINANT
 from models.core import FilterCollection, TargetProfile, ReflectorCollection
-from models.constants import CACHE_DIR
 from services.app_operations import setup_report_download
 from views.ui_utils import try_operation, handle_error
 
@@ -49,6 +49,13 @@ def filter_selection(
     show_advanced_search = st.sidebar.checkbox(
         "Show Advanced Search", 
         key="show_advanced_search"
+    )
+    
+    # --- Channel mixer toggle ---
+    show_channel_mixer = st.sidebar.checkbox(
+        "Show Channel Mixer",
+        key="show_channel_mixer",
+        help="Open channel mixer panel for RGB channel manipulation"
     )
 
     return selected
@@ -107,7 +114,6 @@ def extras(
         # --- Illuminant Selector ---
         if illuminants:
             illum_names = list(illuminants.keys())
-            from models.constants import DEFAULT_ILLUMINANT
             default_idx = illum_names.index(DEFAULT_ILLUMINANT) if DEFAULT_ILLUMINANT in illum_names else 0
             selected_illum_name = st.selectbox("Scene Illuminant", illum_names, index=default_idx)
             selected_illum = illuminants[selected_illum_name]
@@ -201,12 +207,17 @@ def settings_panel(app_state) -> Tuple[bool, bool, Dict[str, bool]]:
         # No manual state management needed - use st.session_state["sidebar_log_view_toggle"] instead
         
         # Rebuild Cache button
-        if st.button("🔄 Rebuild Filter Cache"):
-            return True, False, rgb_channels
+        rebuild_cache = st.button("🔄 Rebuild Filter Cache")
             
-        # Import data button
-        if st.button("WebPlotDigitizer .csv importers"):
-            return False, True, rgb_channels
+        # Import data button - make it a toggle to keep dialog open
+        if app_state.show_import_data:
+            if st.button("✖️ Close Importers"):
+                return rebuild_cache, False, rgb_channels
+            else:
+                return rebuild_cache, True, rgb_channels  # Keep dialog open
+        else:
+            if st.button("📊 WebPlotDigitizer .csv importers"):
+                return rebuild_cache, True, rgb_channels
             
     return False, False, rgb_channels
 
@@ -227,12 +238,9 @@ def reflector_preview(pixels: np.ndarray, reflector_names: Optional[List[str]] =
     # Display in the sidebar
     st.sidebar.subheader("Vegetation Color Preview")
     
-    # Normalize pixels for display (RGB values need to be in [0.0, 1.0] range)
-    max_val = np.max(pixels)
-    if max_val > 0:
-        pixels_normalized = np.clip(pixels / max_val, 0.0, 1.0)
-    else:
-        pixels_normalized = pixels
+    # Use camera-realistic normalization with independent channel saturation
+    from services.visualization import prepare_rgb_for_display
+    pixels_normalized = prepare_rgb_for_display(pixels, auto_exposure=True)
     
     # Display the image in the sidebar
     st.sidebar.image(pixels_normalized, width=300, channels="RGB", output_format="PNG")
@@ -259,14 +267,20 @@ def single_reflector_preview(
     # Display in the sidebar
     st.sidebar.subheader("Surface Preview")
     
-    # Use global max if provided, otherwise normalize individually
-    max_val = global_max if global_max is not None and global_max > 0 else np.max(pixel_color)
+    # Use camera-realistic normalization
+    from services.visualization import prepare_rgb_for_display
     
-    # Normalize pixel for display (RGB values need to be in [0.0, 1.0] range)
-    if max_val > 0:
-        pixel_normalized = np.clip(pixel_color / max_val, 0.0, 1.0)
+    if global_max is not None and global_max > 0:
+        # Use consistent scaling with vegetation preview
+        # Apply the same exposure scaling, then camera-realistic saturation
+        pixel_normalized = prepare_rgb_for_display(
+            pixel_color, 
+            saturation_level=global_max, 
+            auto_exposure=False
+        )
     else:
-        pixel_normalized = pixel_color
+        # Independent normalization when no global reference
+        pixel_normalized = prepare_rgb_for_display(pixel_color, auto_exposure=True)
     
     # Display the single color as a larger image
     st.sidebar.image(pixel_normalized, width=200, channels="RGB", output_format="PNG")
@@ -285,9 +299,10 @@ def render_sidebar(app_state, data):
         Dictionary containing sidebar actions to be processed
     """
     import streamlit as st
+    
+    from models.constants import CACHE_DIR
     from views.ui_utils import try_operation, handle_error
     from services.app_operations import generate_application_report, setup_report_download, rebuild_application_cache
-    from models.constants import CACHE_DIR
     
     st.sidebar.header("Filter Plotter")
     

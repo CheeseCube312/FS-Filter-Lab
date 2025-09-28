@@ -1,32 +1,9 @@
 """
 FS FilterLab - Optical Filter Analysis Tool
-
-A comprehensive Streamlit application for analyzing optical filter stacks, quantum efficiency
-curves, and illuminant spectra. This tool enables optical engineers and photographers to:
-
-- Design and analyze multi-filter optical systems
-- Calculate combined transmission characteristics
-- Evaluate filter effects on camera sensors
-- Generate detailed technical reports
-- Import custom spectral data
-
-Main Features:
-- Interactive filter selection and stacking
-- Real-time transmission calculations
-- RGB channel analysis with white balance
-- Deviation metrics from target profiles
-- Advanced search and filtering capabilities
-- PNG report generation
-
-Usage:
-    Run with: streamlit run app.py
-    Or use the provided batch/shell scripts
-
-License: Open Source (see LICENSE file)
 """
-
 import streamlit as st
 from pathlib import Path
+
 from models.constants import CACHE_DIR
 
 # Configure Streamlit

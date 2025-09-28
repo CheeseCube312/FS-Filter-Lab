@@ -64,6 +64,7 @@ from services.calculations import (
     compute_white_balance_gains,
     compute_reflector_color,
     compute_reflector_preview_colors,
+    find_vegetation_preview_reflectors,
     is_reflector_data_valid,
     check_reflector_wavelength_validity
 )

@@ -4,46 +4,12 @@ Unified State Management for FS FilterLab.
 This module provides centralized application state management using Streamlit's
 session_state as the single source of truth, with a clean object-oriented
 interface for type-safe state access and modification.
-
-Key Features:
-
-Single Source of Truth:
-- All state stored in st.session_state for automatic persistence
-- No duplicate state storage or synchronization issues
-- Automatic handling of page refreshes and browser navigation
-
-Type-Safe Access:
-- Dynamic attribute access with appropriate type defaults
-- Automatic initialization of required state keys
-- Protection against widget-controlled key conflicts
-
-State Categories:
-- Filter selections and multipliers
-- Camera QE and illuminant data
-- Target profiles and computed results
-- UI display preferences and settings
-- Export/report metadata and history
-
-Widget Integration:
-- Seamless integration with Streamlit widgets
-- Automatic handling of widget-controlled vs. programmatic state
-- Error recovery for widget key conflicts
-
-Performance Optimization:
-- Lazy initialization of state values
-- Efficient state updates without full object reconstruction
-- Minimal overhead for state access operations
-
-Usage Example:
-    state = get_state_manager()
-    state.selected_filters = ['Filter1', 'Filter2']
-    current_qe = state.current_qe
-    state.reset()  # Reset to defaults
 """
 import streamlit as st
 from typing import Any, Dict, List, Optional, Union, TypeVar
-from models.core import TargetProfile
-from models.constants import DEFAULT_RGB_VISIBILITY, DEFAULT_WB_GAINS
+
+from models.constants import DEFAULT_RGB_VISIBILITY, DEFAULT_WB_GAINS, DEFAULT_CHANNEL_MIXER
+from models.core import TargetProfile, ChannelMixerSettings
 
 T = TypeVar('T')
 
@@ -113,17 +79,22 @@ class StateManager:
             'combined_transmission': None,
             'white_balance_gains': DEFAULT_WB_GAINS.copy(),
             
+            # Note: Channel mixer is now handled dynamically via _build_live_channel_mixer()
+            # to ensure immediate UI responsiveness
+            
             # Export/report state
             'last_export': {},
             
             # UI state (non-widget controlled)
             'show_import_data': False,
+            'import_status': None,
+            'import_error_message': None,
         }
         
         # Widget-controlled keys (managed by Streamlit widgets, don't initialize manually)
         widget_keys = {
             'selected_filters', 'show_advanced_search', 'sidebar_log_view_toggle',
-            'apply_white_balance_toggle', 'show_R', 'show_G', 'show_B'
+            'apply_white_balance_toggle', 'show_R', 'show_G', 'show_B', 'show_channel_mixer'
         }
         
         for key, default_value in defaults.items():
@@ -191,6 +162,7 @@ class StateManager:
             'target_profile': None,
             'combined_transmission': None,
             'white_balance_gains': DEFAULT_WB_GAINS.copy(),
+            # Note: channel_mixer is now handled dynamically via _build_live_channel_mixer()
             'last_export': {},
             'show_import_data': False,
         }
@@ -209,6 +181,12 @@ class StateManager:
                 'G': st.session_state.get('show_G', True),
                 'B': st.session_state.get('show_B', True)
             }
+        elif name == 'show_channel_mixer':
+            return st.session_state.get('show_channel_mixer', False)
+        elif name == 'channel_mixer':
+            # Always return fresh mixer with current session state values
+            # This ensures sliders are always immediately reflected in calculations
+            return self._build_live_channel_mixer()
         
         if name.startswith('_'):
             # Don't interfere with private attributes
@@ -241,6 +219,37 @@ class StateManager:
     # UTILITY METHODS
     # ========================================================================
     
+    def _build_live_channel_mixer(self) -> ChannelMixerSettings:
+        """
+        Build a ChannelMixerSettings object with current session state values.
+        
+        This ensures that the channel mixer always reflects the current UI state,
+        eliminating timing issues where slider changes aren't immediately reflected
+        in calculations and visualizations.
+        
+        Returns:
+            ChannelMixerSettings object with current slider values from session state
+        """
+        mixer = ChannelMixerSettings()
+        
+        # Get enabled state from the show_channel_mixer widget
+        mixer.enabled = st.session_state.get('show_channel_mixer', False)
+        
+        # Get all 9 channel mixing values from session state with fallbacks to defaults
+        mixer.red_r = st.session_state.get('red_r', DEFAULT_CHANNEL_MIXER['red_r'])
+        mixer.red_g = st.session_state.get('red_g', DEFAULT_CHANNEL_MIXER['red_g'])
+        mixer.red_b = st.session_state.get('red_b', DEFAULT_CHANNEL_MIXER['red_b'])
+        
+        mixer.green_r = st.session_state.get('green_r', DEFAULT_CHANNEL_MIXER['green_r'])
+        mixer.green_g = st.session_state.get('green_g', DEFAULT_CHANNEL_MIXER['green_g'])
+        mixer.green_b = st.session_state.get('green_b', DEFAULT_CHANNEL_MIXER['green_b'])
+        
+        mixer.blue_r = st.session_state.get('blue_r', DEFAULT_CHANNEL_MIXER['blue_r'])
+        mixer.blue_g = st.session_state.get('blue_g', DEFAULT_CHANNEL_MIXER['blue_g'])
+        mixer.blue_b = st.session_state.get('blue_b', DEFAULT_CHANNEL_MIXER['blue_b'])
+        
+        return mixer
+    
     def reset(self) -> None:
         """
         Reset the application state to default values.
@@ -268,6 +277,8 @@ class StateManager:
         self.white_balance_gains = DEFAULT_WB_GAINS.copy()
         self.last_export = {}
         self.show_import_data = False
+        self.import_status = None
+        self.import_error_message = None
         
         # Reset widget-controlled state directly in session_state
         st.session_state['sidebar_log_view_toggle'] = False
@@ -276,6 +287,7 @@ class StateManager:
         st.session_state['show_R'] = True
         st.session_state['show_G'] = True  
         st.session_state['show_B'] = True
+        st.session_state['show_channel_mixer'] = False
     
     def update_multiple(self, **kwargs) -> None:
         """

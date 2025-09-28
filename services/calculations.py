@@ -4,6 +4,7 @@ Mathematical calculations for FS FilterLab.
 This module provides all mathematical computation functions for:
 - Transmission calculations and filtering
 - Color processing and RGB response
+- Channel mixing transformations
 - Metrics computation and formatting
 - White balance calculations
 - Deviation analysis
@@ -11,9 +12,10 @@ This module provides all mathematical computation functions for:
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
-from models import INTERP_GRID, TargetProfile, ReflectorCollection
-from models.core import FilterCollection, TargetProfile
-from models.constants import EPSILON, DEFAULT_WB_GAINS
+from models.constants import EPSILON, DEFAULT_WB_GAINS, VEGETATION_PREVIEW_FILES
+from models.core import FilterCollection, TargetProfile, ChannelMixerSettings, ReflectorCollection
+from models import INTERP_GRID
+from services.channel_mixer import apply_channel_mixing_to_responses, apply_channel_mixing_to_colors
 
 
 # ============================================================================
@@ -136,9 +138,14 @@ def is_valid_transmission(transmission: np.ndarray) -> bool:
     Returns:
         True if transmission is valid, False otherwise
     """
-    return (transmission is not None and 
-            len(transmission) > 0 and 
-            np.any(np.isfinite(transmission)))
+    try:
+        return (transmission is not None and 
+                hasattr(transmission, '__len__') and
+                len(transmission) > 0 and 
+                np.any(np.isfinite(transmission)))
+    except (TypeError, ValueError):
+        # Handle cases where transmission is not array-like or has invalid shape
+        return False
 
 
 # ============================================================================
@@ -258,7 +265,8 @@ def compute_rgb_response(
     transmission: np.ndarray,
     quantum_efficiency: Dict[str, np.ndarray],
     white_balance_gains: Dict[str, float],
-    visible_channels: Dict[str, bool]
+    visible_channels: Dict[str, bool],
+    channel_mixer: Optional[ChannelMixerSettings] = None
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, float]:
     """
     Compute RGB response from transmission and quantum efficiency.
@@ -268,6 +276,7 @@ def compute_rgb_response(
         quantum_efficiency: Dictionary of quantum efficiency values by channel
         white_balance_gains: Dictionary of white balance gains by channel
         visible_channels: Dictionary of channel visibility flags
+        channel_mixer: Optional channel mixer settings for RGB manipulation
     
     Returns:
         Tuple of (responses_by_channel, rgb_matrix, max_response)
@@ -313,6 +322,12 @@ def compute_rgb_response(
             responses[channel] = np.zeros_like(weighted)
             
         rgb_stack.append(responses[channel])
+    
+    # Apply channel mixing if enabled
+    if channel_mixer is not None and channel_mixer.enabled:
+        responses = apply_channel_mixing_to_responses(responses, channel_mixer)
+        # Update rgb_stack with mixed responses
+        rgb_stack = [responses['R'], responses['G'], responses['B']]
 
     # Create RGB matrix and normalize
     rgb_matrix = np.stack(rgb_stack, axis=1)
@@ -383,7 +398,8 @@ def compute_reflector_color(
     reflector: np.ndarray,
     transmission: np.ndarray,
     quantum_efficiency: Dict[str, np.ndarray],
-    illuminant: np.ndarray
+    illuminant: np.ndarray,
+    channel_mixer: Optional[ChannelMixerSettings] = None
 ) -> np.ndarray:
     """
     Compute reflector color from reflector, transmission, QE, and illuminant.
@@ -393,6 +409,7 @@ def compute_reflector_color(
         transmission: Transmission values
         quantum_efficiency: Dictionary of quantum efficiency values by channel
         illuminant: Illuminant curve
+        channel_mixer: Optional channel mixer settings for color manipulation
     
     Returns:
         RGB color as numpy array [R, G, B]
@@ -436,39 +453,105 @@ def compute_reflector_color(
             rgb_values[i] = rgb_resp.get(ch, 0.0) / wb_gain
         else:
             rgb_values[i] = rgb_resp.get(ch, 0.0)
+    
+    # Apply channel mixing if enabled
+    if channel_mixer is not None and channel_mixer.enabled:
+        rgb_values = apply_channel_mixing_to_colors(rgb_values, channel_mixer)
             
     return rgb_values
+
+
+def find_vegetation_preview_reflectors(reflector_collection: ReflectorCollection) -> Optional[List[int]]:
+    """
+    Find the exact 4 hardcoded leaf reflectors for vegetation preview.
+    
+    Returns indices of these specific files in order:
+    1. Leaf_1_reflectance_extrapolated_1100.tsv
+    2. Leaf_2_reflectance_extrapolated_1100.tsv 
+    3. Leaf_3_reflectance_extrapolated_1100.tsv
+    4. Leaf_4_reflectance_extrapolated_1100.tsv
+    
+    Args:
+        reflector_collection: The reflector collection to search
+        
+    Returns:
+        List of 4 indices if all files found, None if any are missing
+    """
+    if not reflector_collection or not hasattr(reflector_collection, 'reflectors'):
+        return None
+        
+    # Use filenames from constants (without .tsv extension)
+    required_names = VEGETATION_PREVIEW_FILES
+    
+    indices = []
+    
+    # Find each required reflector by exact name match
+    for required_name in required_names:
+        found_idx = None
+        
+        for i, reflector in enumerate(reflector_collection.reflectors):
+            # Check if reflector name matches exactly (handles both with/without .tsv)
+            if (reflector.name == required_name or 
+                reflector.name == f"{required_name}.tsv" or
+                reflector.name.replace('.tsv', '') == required_name):
+                found_idx = i
+                break
+                
+        if found_idx is None:
+            # Missing required file - return None to indicate failure
+            return None
+            
+        indices.append(found_idx)
+    
+    return indices
 
 
 def compute_reflector_preview_colors(
     reflector_matrix: np.ndarray, 
     transmission: np.ndarray,
     qe_data: Dict[str, np.ndarray],
-    illuminant: np.ndarray
+    illuminant: np.ndarray,
+    reflector_collection: ReflectorCollection = None,
+    channel_mixer: Optional[ChannelMixerSettings] = None
 ) -> Optional[np.ndarray]:
     """
-    Compute colors for a 2x2 grid of reflector previews.
+    Compute colors for vegetation preview using hardcoded leaf files only.
+    
+    Uses these exact files in a 2x2 grid:
+    - Leaf_1_reflectance_extrapolated_1100.tsv
+    - Leaf_2_reflectance_extrapolated_1100.tsv
+    - Leaf_3_reflectance_extrapolated_1100.tsv 
+    - Leaf_4_reflectance_extrapolated_1100.tsv
     
     Args:
         reflector_matrix: Matrix of reflector data
         transmission: Transmission values
         qe_data: Quantum efficiency data
         illuminant: Illuminant curve
+        reflector_collection: ReflectorCollection with reflector names
+        channel_mixer: Optional channel mixer settings for color manipulation
         
     Returns:
-        Array of RGB pixel values or None if computation failed
+        Array of RGB pixel values or None if hardcoded files not found
     """
-    # Check if we have enough reflectors
-    if reflector_matrix is None or len(reflector_matrix) < 4:
+    # Find the exact hardcoded leaf files
+    if reflector_collection is None:
+        return None
+        
+    leaf_indices = find_vegetation_preview_reflectors(reflector_collection)
+    
+    if leaf_indices is None:
+        # Required leaf files not found - return None to show warning
         return None
     
-    # Create a 2x2 grid of reflector colors
+    # Create a 2x2 grid using only the hardcoded leaf files
     pixels = np.zeros((2, 2, 3))
     for i in range(2):
         for j in range(2):
-            idx = i * 2 + j
-            reflector = reflector_matrix[idx]
-            pixels[i, j] = compute_reflector_color(reflector, transmission, qe_data, illuminant)
+            grid_idx = i * 2 + j
+            reflector_idx = leaf_indices[grid_idx]
+            reflector = reflector_matrix[reflector_idx]
+            pixels[i, j] = compute_reflector_color(reflector, transmission, qe_data, illuminant, channel_mixer)
     
     # Replace any NaN values with zeros
     pixels = np.nan_to_num(pixels)
@@ -485,7 +568,8 @@ def compute_single_reflector_color(
     selected_idx: int,
     transmission: np.ndarray,
     qe_data: Dict[str, np.ndarray],
-    illuminant: np.ndarray
+    illuminant: np.ndarray,
+    channel_mixer: Optional[ChannelMixerSettings] = None
 ) -> Optional[np.ndarray]:
     """
     Compute color for a single selected reflector.
@@ -496,6 +580,7 @@ def compute_single_reflector_color(
         transmission: Transmission values
         qe_data: Quantum efficiency data
         illuminant: Illuminant curve
+        channel_mixer: Optional channel mixer settings for color manipulation
         
     Returns:
         Array with single RGB pixel value or None if computation failed
@@ -509,7 +594,7 @@ def compute_single_reflector_color(
     
     # Compute color for the selected reflector
     reflector = reflector_matrix[selected_idx]
-    color = compute_reflector_color(reflector, transmission, qe_data, illuminant)
+    color = compute_reflector_color(reflector, transmission, qe_data, illuminant, channel_mixer)
     
     # Replace any NaN values with zeros
     color = np.nan_to_num(color)

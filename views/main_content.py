@@ -246,7 +246,9 @@ def render_main_content(app_state, data):
         data: Dictionary containing loaded application data
     """
     import streamlit as st
+    
     from models.constants import INTERP_GRID
+    from models.core import TargetProfile
     from services.calculations import compute_selected_filter_indices
     from services import (
         compute_filter_transmission,
@@ -265,8 +267,8 @@ def render_main_content(app_state, data):
         compute_reflector_preview_colors,
         compute_single_reflector_color
     )
-    from views.forms import import_data_form
-    from views.forms import advanced_filter_search
+    from views.forms import import_data_form, advanced_filter_search
+    from views.channel_mixer import render_channel_mixer_panel, render_compact_channel_mixer_status
     from views.ui_utils import show_warning_message, show_info_message
     
     # Extract data  
@@ -313,12 +315,16 @@ def render_main_content(app_state, data):
     # Advanced search UI
     if app_state.show_advanced_search:
         advanced_filter_search(filter_collection.df, filter_collection.filter_matrix)
+    
+    # Channel mixer UI
+    if app_state.show_channel_mixer:
+        app_state.channel_mixer = render_channel_mixer_panel(app_state.channel_mixer)
 
 
 def _render_filter_analysis(app_state, filter_collection, selected_indices):
     """Render filter analysis plots and metrics."""
-    from services import compute_filter_transmission, compute_rgb_response, create_filter_response_plot
     from models.constants import INTERP_GRID
+    from services import compute_filter_transmission, compute_rgb_response, create_filter_response_plot
     
     # Calculate transmission and combined transmission
     trans, label, combined = compute_filter_transmission(
@@ -335,7 +341,8 @@ def _render_filter_analysis(app_state, filter_collection, selected_indices):
             trans, 
             app_state.current_qe,
             app_state.white_balance_gains,
-            app_state.rgb_channels_visibility
+            app_state.rgb_channels_visibility,
+            app_state.channel_mixer  # Pass channel mixer settings
         )
         # Use Green channel for effective stops calculation (most representative)
         sensor_qe = responses.get('G', None) if responses else None
@@ -369,20 +376,21 @@ def _render_filter_analysis(app_state, filter_collection, selected_indices):
 def _render_sensor_analysis(app_state, data, selected_indices):
     """Render sensor response analysis and reflector previews."""
     import streamlit as st
+    
+    from models.constants import INTERP_GRID
     from services import (
         compute_active_transmission,
         compute_white_balance_gains,
         create_sensor_response_plot
     )
-    from models.constants import INTERP_GRID
-    from views.sidebar import reflector_preview, single_reflector_preview, single_reflector_preview
-    from views.ui_utils import show_warning_message, show_info_message
     from services.calculations import (
         is_reflector_data_valid,
         check_reflector_wavelength_validity,
         compute_reflector_preview_colors,
         compute_single_reflector_color
     )
+    from views.sidebar import reflector_preview, single_reflector_preview
+    from views.ui_utils import show_warning_message, show_info_message
     
     # Extract data
     filter_collection = data['filter_collection'] 
@@ -411,7 +419,8 @@ def _render_sensor_analysis(app_state, data, selected_indices):
         visible_channels=app_state.rgb_channels_visibility,
         white_balance_gains=wb_gains,
         apply_white_balance=app_state.apply_white_balance,
-        target_profile=app_state.target_profile
+        target_profile=app_state.target_profile,
+        channel_mixer=app_state.channel_mixer  # Pass channel mixer settings
     )
     
     # Display sensor response with white balance toggle
@@ -428,18 +437,31 @@ def _render_sensor_analysis(app_state, data, selected_indices):
             if not check_reflector_wavelength_validity(reflector_matrix):
                 show_warning_message("Some reflector data appears incomplete. Check data files.")
             
-            # Vegetation preview (2x2 grid) - only if we have 4+ reflectors
+            # Vegetation preview (2x2 grid) - only with hardcoded leaf files
             if len(reflector_matrix) >= 4:
                 pixels = compute_reflector_preview_colors(
-                    reflector_matrix, trans_interp, app_state.current_qe, app_state.illuminant
+                    reflector_matrix, trans_interp, app_state.current_qe, 
+                    app_state.illuminant, reflector_collection, app_state.channel_mixer
                 )
                 
                 if pixels is not None:
                     reflector_preview(pixels)
                 else:
-                    show_warning_message("Unable to compute valid vegetation colors")
+                    show_warning_message(
+                        "⚠️ Vegetation Color Preview requires these exact files in data/reflectors/plant/:\n" +
+                        "• Leaf_1_reflectance_extrapolated_1100.tsv\n" +
+                        "• Leaf_2_reflectance_extrapolated_1100.tsv\n" +
+                        "• Leaf_3_reflectance_extrapolated_1100.tsv\n" +
+                        "• Leaf_4_reflectance_extrapolated_1100.tsv"
+                    )
             else:
-                show_info_message("Not enough reflector data for vegetation preview (need 4 spectra)")
+                show_warning_message(
+                    "⚠️ Vegetation Color Preview requires these exact files in data/reflectors/plant/:\n" +
+                    "• Leaf_1_reflectance_extrapolated_1100.tsv\n" +
+                    "• Leaf_2_reflectance_extrapolated_1100.tsv\n" +
+                    "• Leaf_3_reflectance_extrapolated_1100.tsv\n" +
+                    "• Leaf_4_reflectance_extrapolated_1100.tsv"
+                )
                 
             # Single reflector preview - get selected index from session state
             selected_reflector_idx = st.session_state.get("selected_reflector_idx", None)
@@ -452,7 +474,7 @@ def _render_sensor_analysis(app_state, data, selected_indices):
                 
                 single_color = compute_single_reflector_color(
                     reflector_matrix, selected_reflector_idx, trans_interp, 
-                    app_state.current_qe, app_state.illuminant
+                    app_state.current_qe, app_state.illuminant, app_state.channel_mixer
                 )
                 
                 if single_color is not None:
@@ -468,7 +490,7 @@ def _render_sensor_analysis(app_state, data, selected_indices):
                         for i in range(min(len(reflector_matrix), 4)):  # Check up to 4 reflectors
                             color = compute_single_reflector_color(
                                 reflector_matrix, i, trans_interp,
-                                app_state.current_qe, app_state.illuminant
+                                app_state.current_qe, app_state.illuminant, app_state.channel_mixer
                             )
                             if color is not None:
                                 all_colors.append(color)
