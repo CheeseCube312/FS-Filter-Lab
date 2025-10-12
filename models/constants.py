@@ -51,11 +51,6 @@ CACHE_DIR = Path("cache")  # Directory for storing cached computation results
 # Mathematical constants for numerical stability
 EPSILON = 1e-6  # Small value to prevent division by zero and log domain errors
 
-# Data processing constants
-TRANSMISSION_NORMALIZATION_THRESHOLD = 1.5  # Values above this are assumed to be in 0-100 scale instead of 0-1
-MIN_VALID_DATAPOINTS = 2  # Minimum number of valid data points required for a spectral dataset
-DECIMAL_PRECISION = 3  # Number of decimal places for rounding spectral values
-
 # Channel Mixer constants
 DEFAULT_CHANNEL_MIXER = {
     # Red output channel (R_out = R*red_r + G*red_g + B*red_b)

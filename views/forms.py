@@ -211,7 +211,7 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
                 show_details = st.toggle("Details", key=toggle_key, label_visibility="collapsed")
 
             if show_details:
-                fig = create_sparkline_plot(INTERP_GRID, filter_matrix[idx, :], color=hex_color)
+                fig = create_sparkline_plot(INTERP_GRID, filter_matrix[idx, :], line_color=hex_color)
                 st.plotly_chart(fig, use_container_width=False)
                 st.checkbox("Select this filter", key=f"adv_sel_{idx}")
 

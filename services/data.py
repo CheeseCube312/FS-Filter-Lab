@@ -1,33 +1,17 @@
 """
 Data loading services for FS FilterLab.
-
-This module handles loading and processing spectral data:
-- Filter transmission curves
-- Camera sensor quantum efficiency (QE) curves
-- Illuminant spectral power distributions
-- Surface reflectance spectra
-
-Features include NaN handling, normalization, interpolation,
-file caching, and consistent data processing.
 """
 import numpy as np
 import pandas as pd
 from pathlib import Path
 import pickle
-from typing import Dict, List, Tuple, Any, Optional, TypeVar, Callable, NamedTuple, Union
+from typing import Dict, List, Tuple, Any, Optional, TypeVar, Callable
 
 from models import (
-    Filter, FilterCollection, 
+    Filter, FilterCollection, TargetProfile,
     ReflectorSpectrum, ReflectorCollection
 )
-from models.constants import (
-    CACHE_DIR, DEFAULT_HEX_COLOR, DEFAULT_ILLUMINANT, INTERP_GRID,
-    TRANSMISSION_NORMALIZATION_THRESHOLD, MIN_VALID_DATAPOINTS, DECIMAL_PRECISION
-)
-
-# Configure logging for this module
-import logging
-logger = logging.getLogger(__name__)
+from models.constants import CACHE_DIR, DEFAULT_HEX_COLOR, DEFAULT_ILLUMINANT, INTERP_GRID
 
 # Ensure cache directory exists
 Path(CACHE_DIR).mkdir(exist_ok=True)
@@ -35,327 +19,61 @@ Path(CACHE_DIR).mkdir(exist_ok=True)
 # Generic type for cached data
 T = TypeVar('T')
 
-class SpectralConfig(NamedTuple):
-    """Configuration for spectral file processing."""
-    wavelength_col: str = "Wavelength"        # Column name for wavelength values
-    value_col: str = "Transmittance"          # Column name for spectral values
-    normalize: bool = True                    # Whether to normalize values from 0-100 to 0-1
-    round_precision: Optional[int] = None     # Optional rounding precision
-    name_cols: List[str] = ["Name"]           # Columns to check for name (in priority order)
-    metadata_cols: List[str] = []             # Additional metadata columns to extract
-    default_name: Optional[str] = None        # Default name if none found in file
-
-
-class SpectralFileProcessor:
+def parse_tsv_file(file_path: str | Path) -> pd.DataFrame:
     """
-    Processes spectral data files with configurable column handling.
+    Parse a TSV file with standardized error handling.
     
-    This class handles common operations for different spectral file types:
-    - TSV file parsing with column validation
-    - NaN filtering and normalization
-    - Interpolation to standard wavelength grids
-    - Metadata extraction with fallbacks
+    Args:
+        file_path: Path to the TSV file
+        
+    Returns:
+        DataFrame with parsed data, columns stripped of whitespace
     """
-    
-    def __init__(self, config: SpectralConfig):
-        """Initialize processor with configuration."""
-        self.config = config
-    
-    def parse_file(self, path: Path) -> Optional[pd.DataFrame]:
-        """Parse a TSV file with error handling and cleaning."""
-        try:
-            df = pd.read_csv(path, sep="\t")
-            
-            # Clean column names
-            df.columns = [str(c).strip() for c in df.columns]
-            
-            # Drop rows where all numeric columns are NaN
-            numeric_cols = df.select_dtypes(include=['number']).columns
-            if len(numeric_cols) > 0:
-                df = df.dropna(subset=numeric_cols, how='all')
-                
-            # Verify required columns
-            if self.config.wavelength_col not in df.columns:
-                return None
-                
-            if self.config.value_col and self.config.value_col not in df.columns:
-                # For illuminants, we allow using the second column regardless of name
-                if not (len(df.columns) >= 2 and not self.config.value_col):
-                    return None
-                    
-            return df
-            
-        except Exception as e:
-            logger.error(f"Failed to load {path}: {str(e)}")
-            return None
-    
-    def extract_name(self, df: pd.DataFrame, path: Path) -> str:
-        """Extract a name from dataframe with fallbacks."""
-        # Try each name column in priority order
-        for col in self.config.name_cols:
-            if col in df.columns:
-                name_values = df[col].dropna()
-                if len(name_values) > 0:
-                    name = str(name_values.iloc[0]).strip()
-                    if name:
-                        return name
-        
-        # Use default name from config if provided
-        if self.config.default_name:
-            return self.config.default_name
-            
-        # Fall back to filename stem
-        return path.stem
-    
-    def extract_metadata(self, df: pd.DataFrame, path: Path) -> Dict[str, Any]:
-        """Extract metadata from a dataframe."""
-        metadata = {}
-        
-        # Extract name first
-        name = self.extract_name(df, path)
-        if name:
-            metadata["name"] = name
-        
-        # Extract additional metadata
-        first_row = df.iloc[0] if not df.empty else pd.Series()
-        
-        for col in self.config.metadata_cols:
-            if col in df.columns and pd.notnull(first_row.get(col, None)):
-                metadata[col] = first_row.get(col)
-                
-        return metadata
-    
-    def get_spectral_data(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-        """Extract spectral data arrays from a dataframe."""
-        # Handle wavelength column
-        wavelengths = df[self.config.wavelength_col].astype(float).values
-        
-        # Handle value column (or use second column for illuminants)
-        if self.config.value_col and self.config.value_col in df.columns:
-            values = df[self.config.value_col].astype(float).values
-        else:
-            # For illuminants, use the second column regardless of name
-            values = df.iloc[:, 1].astype(float).values
-        
-        # Filter out NaN values
-        valid_mask = ~np.isnan(wavelengths) & ~np.isnan(values)
-        if not np.any(valid_mask):
-            return np.array([]), np.array([])
-            
-        return wavelengths[valid_mask], values[valid_mask]
-    
-    def normalize_values(self, values: np.ndarray) -> np.ndarray:
-        """Normalize values from 0-100 to 0-1 scale if needed."""
-        if not self.config.normalize:
-            return values
-            
-        valid_values = values[~np.isnan(values)]
-        if len(valid_values) == 0:
-            return values
-            
-        if np.max(valid_values) > TRANSMISSION_NORMALIZATION_THRESHOLD:
-            return values / 100.0
-            
-        return values
-    
-    def interpolate(self, wavelengths: np.ndarray, values: np.ndarray, 
-                   target_grid: np.ndarray = INTERP_GRID) -> np.ndarray:
-        """Interpolate spectral data to a standard wavelength grid."""
-        # Check if we have enough data points to interpolate
-        if len(wavelengths) < MIN_VALID_DATAPOINTS:
-            return np.zeros_like(target_grid, dtype=float)
-            
-        # Perform interpolation
-        result = np.interp(
-            target_grid,
-            wavelengths,
-            values,
-            left=np.nan,
-            right=np.nan
-        )
-        
-        # Apply rounding if configured
-        if self.config.round_precision is not None:
-            result = np.round(result, self.config.round_precision)
-            
-        return result
-    
-    def process(self, path: Path) -> Tuple[Optional[Dict[str, Any]], Optional[np.ndarray]]:
-        """
-        Process a spectral file and return metadata and interpolated values.
-        
-        Args:
-            path: Path to the spectral file
-            
-        Returns:
-            Tuple of (metadata dict, interpolated values) or (None, None) if invalid
-        """
-        # Parse the file
-        df = self.parse_file(path)
-        if df is None:
-            return None, None
-            
-        # Extract metadata
-        metadata = self.extract_metadata(df, path)
-        
-        # Add file path to metadata for special processing (like Lee filters)
-        metadata["__file_path__"] = str(path)
-        
-        # Get spectral data
-        wavelengths, values = self.get_spectral_data(df)
-        if len(wavelengths) == 0:
-            return None, None
-            
-        # Normalize if needed
-        values = self.normalize_values(values)
-        
-        # Interpolate to standard grid
-        interp_values = self.interpolate(wavelengths, values)
-        
-        # Check if interpolation succeeded
-        if np.all(interp_values == 0):
-            return None, None
-            
-        return metadata, interp_values
+    path = Path(file_path) if isinstance(file_path, str) else file_path
+    df = pd.read_csv(path, sep="\t")
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
 
 
-class DirectoryLoader:
-    """
-    Utility for loading and processing spectral files from a directory.
-    
-    This class handles common directory operations:
-    - Recursively finding files matching a pattern
-    - Processing each file with a configured processor
-    - Collecting results into structured collections
-    """
-    
-    def __init__(self, processor: SpectralFileProcessor):
-        """Initialize with a processor for individual files."""
-        self.processor = processor
-    
-    def find_files(self, directory: Union[str, Path], 
-                  pattern: str = "**/*.tsv", 
-                  recursive: bool = True) -> List[Path]:
-        """Find files in a directory matching a pattern."""
-        data_dir = Path(directory)
-        data_dir.mkdir(exist_ok=True, parents=True)
-        
-        if recursive:
-            return list(data_dir.glob(pattern))
-        else:
-            return list(data_dir.glob(f"*.tsv"))
-    
-    def load_directory(self, directory: Union[str, Path], 
-                      recursive: bool = True) -> Tuple[List[Dict[str, Any]], List[np.ndarray]]:
-        """
-        Load and process all spectral files in a directory.
-        
-        Args:
-            directory: Directory to scan for spectral files
-            recursive: Whether to search subdirectories
-            
-        Returns:
-            Tuple of (metadata_list, values_list) where each list contains
-            the metadata and interpolated values for each valid file
-        """
-        files = self.find_files(directory, recursive=recursive)
-        metadata_list = []
-        values_list = []
-        
-        for path in files:
-            metadata, values = self.processor.process(path)
-            if metadata is not None and values is not None:
-                metadata_list.append(metadata)
-                values_list.append(values)
-                
-        return metadata_list, values_list
-        
-    def process_directory(self, directory: Union[str, Path], 
-                         process_results_fn: Callable[[List[Dict[str, Any]], List[np.ndarray]], T],
-                         recursive: bool = True) -> T:
-        """
-        Process a directory and transform the results with a custom function.
-        
-        Args:
-            directory: Directory to scan for spectral files
-            process_results_fn: Function to process the collected metadata and values
-            recursive: Whether to search subdirectories
-            
-        Returns:
-            Result of applying process_results_fn to the collected data
-        """
-        metadata_list, values_list = self.load_directory(directory, recursive)
-        return process_results_fn(metadata_list, values_list)
-
-# Create processor configurations for each data type
-FILTER_PROCESSOR_CONFIG = SpectralConfig(
-    wavelength_col="Wavelength",
-    value_col="Transmittance",
-    normalize=True,
-    name_cols=["Name", "Filter Name"],
-    metadata_cols=["Filter Number", "Manufacturer", "hex_color"]
-)
-
-QE_PROCESSOR_CONFIG = SpectralConfig(
-    wavelength_col="Wavelength", 
-    value_col="",  # RGB channels are handled separately
-    normalize=False,
-    name_cols=["Name"],
-    metadata_cols=["Manufacturer"]
-)
-
-ILLUMINANT_PROCESSOR_CONFIG = SpectralConfig(
-    wavelength_col="Wavelength (nm)",
-    value_col="SPD",  # Default column name, but the processor will fall back to second column
-    normalize=False,
-    name_cols=["Name"],
-    metadata_cols=["Description"]
-)
-
-REFLECTOR_PROCESSOR_CONFIG = SpectralConfig(
-    wavelength_col="Wavelength",
-    value_col="Reflectance",
-    normalize=True,
-    round_precision=DECIMAL_PRECISION,
-    name_cols=["Name"]
-)
-
-# Create processors for each data type
-filter_processor = SpectralFileProcessor(FILTER_PROCESSOR_CONFIG)
-qe_processor = SpectralFileProcessor(QE_PROCESSOR_CONFIG)
-illuminant_processor = SpectralFileProcessor(ILLUMINANT_PROCESSOR_CONFIG)
-reflector_processor = SpectralFileProcessor(REFLECTOR_PROCESSOR_CONFIG)
-
-# Helper functions for filter collection and reflector collection
-
-
-def cached_loader(cache_key: str, data_folder: Union[str, Path], 
+def cached_loader(cache_key: str, data_folder: str | Path, 
                   load_function: Callable[[], T]) -> T:
-    """Simple caching mechanism for data loading."""
-    import time
+    """
+    Simple caching mechanism for data loading.
     
+    Args:
+        cache_key: Base name for the cache file (without extension)
+        data_folder: Path to the folder containing source data files
+        load_function: Function to call when cache is invalid or missing
+        
+    Returns:
+        Data from cache or freshly loaded
+    """
     data_dir = Path(data_folder)
     cache_file = Path(CACHE_DIR) / f"{cache_key}.pkl"
     cache_time_file = Path(CACHE_DIR) / f"{cache_key}_time.pkl"
     
     # Check if cache exists and is newer than source files
+    cache_valid = False
     if cache_file.exists() and cache_time_file.exists():
         try:
+            # Load the last modification time we saved
             with open(cache_time_file, 'rb') as f:
                 cached_timestamp = pickle.load(f)
             
             # Find the newest file in the data folder
-            newest_time = max(
-                (p.stat().st_mtime for p in data_dir.glob("**/*.tsv") if p.is_file()), 
-                default=0
-            )
+            newest_time = 0
+            for filepath in data_dir.glob("**/*.tsv"):
+                if filepath.is_file():
+                    newest_time = max(newest_time, filepath.stat().st_mtime)
             
-            # If cache is valid, use it
-            if cached_timestamp > newest_time and newest_time > 0:
+            # If our cached time is newer than any data file, cache is valid
+            cache_valid = cached_timestamp > newest_time
+            
+            if cache_valid:
                 with open(cache_file, 'rb') as f:
                     return pickle.load(f)
         except Exception:
-            pass
+            pass  # Silent failure for cache operations
     
     # Cache miss or invalid - load fresh data
     data = load_function()
@@ -364,15 +82,18 @@ def cached_loader(cache_key: str, data_folder: Union[str, Path],
     try:
         with open(cache_file, 'wb') as f:
             pickle.dump(data, f)
+            
+        # Save current timestamp
+        import time
         with open(cache_time_file, 'wb') as f:
             pickle.dump(time.time(), f)
     except Exception:
-        pass
+        pass  # Silent failure for cache operations
         
     return data
 
 
-# Helper functions
+# Helper functions for empty collection creation
 def create_empty_filter_collection() -> FilterCollection:
     """Create an empty filter collection."""
     return FilterCollection(
@@ -390,118 +111,147 @@ def create_empty_reflector_collection() -> ReflectorCollection:
     )
 
 def safely_load_file(path: Path, processor_func: Callable) -> Optional[Any]:
-    """Process a file with error handling."""
+    """
+    Load and process a file with standardized error handling.
+    
+    Args:
+        path: Path to the file to load
+        processor_func: Function to process the file contents
+        
+    Returns:
+        Processed file contents or None if loading failed
+    """
     try:
         return processor_func(path)
-    except Exception as e:
-        logger.warning(f"Failed to process {path.name}: {type(e).__name__}: {str(e)}")
+    except Exception:
         return None
 
 
-def is_lee_filter(path_or_name: Union[Path, str]) -> bool:
+def _process_filter_file(path: Path) -> Optional[Tuple[dict, np.ndarray, np.ndarray, Filter]]:
     """
-    Check if a file represents a Lee filter based on its path or name.
-    Lee filters need special handling for extrapolation above 700nm.
+    Process a single filter file and return its data components.
     
     Args:
-        path_or_name: Path object or string filename/path
+        path: Path to the filter file
         
     Returns:
-        True if the file is a Lee filter
+        Tuple of (metadata, transmission, mask, filter) or None if invalid
     """
-    name = path_or_name.name if isinstance(path_or_name, Path) else str(path_or_name)
-    return 'LeeFilters' in name
+    df = parse_tsv_file(path)
+    
+    # Check if file has required columns
+    if "Wavelength" not in df.columns or "Transmittance" not in df.columns:
+        return None
+    
+    filename = path.name
+    is_lee = 'LeeFilters' in filename
+    
+    # Extract metadata from first row
+    first_row = df.iloc[0]
+    
+    fn = str(first_row.get('Filter Number', path.stem))
+    name_raw = first_row.get('Name')
+    name = str(name_raw).strip() if pd.notnull(name_raw) and str(name_raw).strip() else path.stem
+    manufacturer = first_row.get('Manufacturer', 'Unknown')
+    hex_color_raw = first_row.get('hex_color', DEFAULT_HEX_COLOR)
+    hex_color = str(hex_color_raw).strip() if pd.notnull(hex_color_raw) and str(hex_color_raw).strip().startswith("#") else DEFAULT_HEX_COLOR
+    
+    # Extract wavelength and transmittance values
+    wavelengths = df["Wavelength"].astype(float).values
+    transmittance = df["Transmittance"].astype(float).values
+    
+    # Normalize if needed
+    if transmittance.max() > 1.5:
+        transmittance /= 100.0
+    
+    # Interpolate to standard grid
+    interp_vals = np.interp(INTERP_GRID, wavelengths, transmittance, left=np.nan, right=np.nan)
+    extrap_mask = (INTERP_GRID > 700) if is_lee else np.zeros_like(INTERP_GRID, dtype=bool)
+    
+    metadata = {
+        'Filter Number': fn,
+        'Filter Name': name,
+        'Manufacturer': manufacturer,
+        'Hex Color': hex_color,
+        'is_lee': is_lee
+    }
+    
+    filter_obj = Filter(
+        name=name,
+        number=fn,
+        manufacturer=manufacturer,
+        hex_color=hex_color,
+        transmission=interp_vals,
+        extrapolated_mask=extrap_mask
+    )
+    
+    return metadata, interp_vals, extrap_mask, filter_obj
 
 def _load_filter_collection_from_files() -> FilterCollection:
-    """Load filter data from files using the DirectoryLoader."""
+    """
+    Load filter data from files without using cache.
+    
+    Returns:
+        FilterCollection object
+    """
     data_folder = Path("data") / "filters_data"
+    data_folder.mkdir(exist_ok=True, parents=True)
     
-    # Create a DirectoryLoader for filters
-    loader = DirectoryLoader(filter_processor)
+    files = list(data_folder.glob("**/*.tsv"))
+    meta_list, matrix, masks = [], [], []
+    filters = []
     
-    # Define a custom results processor function
-    def process_results(metadata_list: List[Dict[str, Any]], values_list: List[np.ndarray]) -> FilterCollection:
-        if not metadata_list:
-            return create_empty_filter_collection()
-            
-        meta_list = []
-        matrix = []
-        masks = []
-        filters = []
-        
-        # Process each result
-        for i, (metadata, values) in enumerate(zip(metadata_list, values_list)):
-            # Handle Lee filters specially - check file path if available
-            path_name = str(metadata.get("__file_path__", ""))
-            filter_is_lee = is_lee_filter(path_name)
-            extrap_mask = (INTERP_GRID > 700) if filter_is_lee else np.zeros_like(INTERP_GRID, dtype=bool)
-            
-            # Set defaults for metadata
-            name = metadata.get("name", f"Filter {i}")
-            fn = metadata.get("Filter Number", f"F{i}")
-            manufacturer = metadata.get("Manufacturer", "Unknown")
-            
-            # Ensure hex_color is valid
-            hex_color = metadata.get("hex_color", DEFAULT_HEX_COLOR)
-            if not (isinstance(hex_color, str) and hex_color.startswith("#")):
-                hex_color = DEFAULT_HEX_COLOR
-                
-            # Create metadata dictionary
-            filter_metadata = {
-                'Filter Number': fn,
-                'Filter Name': name,
-                'Manufacturer': manufacturer,
-                'Hex Color': hex_color,
-                'is_lee': filter_is_lee
-            }
-            
-            # Create filter object
-            filter_obj = Filter(
-                name=name,
-                number=fn,
-                manufacturer=manufacturer,
-                hex_color=hex_color,
-                transmission=values,
-                extrapolated_mask=extrap_mask
-            )
-            
-            # Add to result collections
-            meta_list.append(filter_metadata)
-            matrix.append(values)
-            masks.append(extrap_mask)
+    for path in files:
+        result = safely_load_file(path, _process_filter_file)
+        if result:
+            metadata, transmission, mask, filter_obj = result
+            meta_list.append(metadata)
+            matrix.append(transmission)
+            masks.append(mask)
             filters.append(filter_obj)
-            
-        try:
-            return FilterCollection(
-                filters=filters,
-                df=pd.DataFrame(meta_list),
-                filter_matrix=np.vstack(matrix),
-                extrapolated_masks=np.vstack(masks)
-            )
-        except Exception as e:
-            logger.error(f"Failed to create filter collection: {e}")
-            return create_empty_filter_collection()
+
+    # Return empty collection if no valid data found
+    if not matrix:
+        return create_empty_filter_collection()
     
-    # Use DirectoryLoader to process the files
-    return loader.process_directory(data_folder, process_results, recursive=True)
+    try:
+        df_result = pd.DataFrame(meta_list)
+        matrix_result = np.vstack(matrix)
+        masks_result = np.vstack(masks)
+        
+        return FilterCollection(
+            filters=filters,
+            df=df_result,
+            filter_matrix=matrix_result,
+            extrapolated_masks=masks_result
+        )
+    except Exception:
+        return create_empty_filter_collection()
 
 
 def load_filter_collection() -> FilterCollection:
     """Load filter data and return a FilterCollection object."""
-    def _create_cached_data():
+    def _create_cached_data() -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, List[Filter]]:
+        """Load fresh filter data for caching"""
         collection = _load_filter_collection_from_files()
-        return (collection.df, collection.filter_matrix, 
-                collection.extrapolated_masks, collection.filters)
+        return (collection.df, collection.filter_matrix, collection.extrapolated_masks, collection.filters)
     
+    # Load data using cache wrapper
     try:
-        df, matrix, masks, filters = cached_loader(
+        cached_data = cached_loader(
             cache_key="filter_data",
             data_folder=str(Path("data") / "filters_data"),
             load_function=_create_cached_data
         )
+        
+        # Unpack cached data
+        df, matrix, masks, filters = cached_data
+        
         return FilterCollection(
-            filters=filters, df=df,
-            filter_matrix=matrix, extrapolated_masks=masks
+            filters=filters,
+            df=df,
+            filter_matrix=matrix,
+            extrapolated_masks=masks
         )
     except Exception:
         return _load_filter_collection_from_files()
@@ -509,32 +259,26 @@ def load_filter_collection() -> FilterCollection:
 
 def _process_qe_file(path: Path) -> Optional[Tuple[str, Dict[str, np.ndarray], bool]]:
     """
-    Process a quantum efficiency file with RGB channel handling.
-    
-    QE files have a special structure with RGB columns that need individual processing.
+    Process a quantum efficiency file.
     
     Args:
         path: Path to the QE file
         
     Returns:
-        Tuple of (sensor_name, channel_data_dict, is_default) or None if invalid
+        Tuple of (sensor_key, channel_data, is_default) or None if invalid
     """
-    # Parse the file using the QE processor
-    df = qe_processor.parse_file(path)
-    if df is None:
-        return None
+    df = parse_tsv_file(path)
     
-    # Check if file has required columns: Wavelength and at least one RGB channel
+    # Check if file has required columns
     if 'Wavelength' not in df.columns or not any(col in df.columns for col in ['R', 'G', 'B']):
         return None
     
-    # Extract metadata for the sensor
-    metadata = qe_processor.extract_metadata(df, path)
-    brand = metadata.get("Manufacturer", "Generic").strip()
-    model = metadata.get("name", path.stem).strip()
+    # Extract sensor info
+    brand = df['Manufacturer'].iloc[0].strip() if 'Manufacturer' in df.columns else "Generic"
+    model = df['Name'].iloc[0].strip() if 'Name' in df.columns else path.stem
     key = f"{brand} {model}"
     
-    # Process each RGB channel individually
+    # Process channels
     channel_data = {}
     wavelength = df['Wavelength'].astype(float).values
     
@@ -542,30 +286,29 @@ def _process_qe_file(path: Path) -> Optional[Tuple[str, Dict[str, np.ndarray], b
         if channel not in df.columns:
             continue
             
-        channel_values = df[channel].values.astype(float)
-        
-        # Use the processor's interpolation for consistent handling
-        interp_vals = qe_processor.interpolate(wavelength, channel_values)
-        
-        # Only add channel if we have valid data
-        if not np.all(interp_vals == 0):
-            channel_data[channel[0]] = interp_vals
+        valid_mask = ~pd.isna(df[channel])
+        if not valid_mask.any():
+            continue
+            
+        channel_values = df[channel].values
+        interp = np.interp(
+            INTERP_GRID, 
+            wavelength, 
+            channel_values,
+            left=np.nan, 
+            right=np.nan
+        )
+        channel_data[channel[0]] = interp
     
-    # Check if we have any valid channels
-    if not channel_data:
-        return None
-    
-    # Flag if this is the default QE file
+    # Check if this is the default QE file
     is_default = (path.name == 'Default_QE.tsv')
+    
     return key, channel_data, is_default
 
 
 def _load_quantum_efficiencies_from_files() -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]], Optional[str]]:
     """
-    Load quantum efficiency data from files.
-    
-    QE files require special handling for RGB channels, but we use the DirectoryLoader
-    for consistent file finding and leverage the processor for metadata extraction.
+    Load quantum efficiency data from files without using cache.
     
     Returns:
         Tuple of (qe_keys, qe_data, default_key)
@@ -573,28 +316,19 @@ def _load_quantum_efficiencies_from_files() -> Tuple[List[str], Dict[str, Dict[s
     folder = Path('data') / 'QE_data'
     folder.mkdir(exist_ok=True, parents=True)
     
-    # Create a DirectoryLoader for QE files
-    loader = DirectoryLoader(qe_processor)
-    
-    # Define a custom processor for QE files that handles the RGB channels
-    def process_qe_results(paths: List[Path]) -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]], Optional[str]]:
-        qe_dict = {}
-        default_key = None
-        
-        for path in paths:
-            result = safely_load_file(path, _process_qe_file)
-            if result:
-                key, channel_data, is_default = result
-                qe_dict[key] = channel_data
-                if is_default and default_key is None:
-                    default_key = key
-                    
-        return sorted(qe_dict.keys()), qe_dict, default_key
-    
-    # Find files using DirectoryLoader's file finding capability
-    files = loader.find_files(folder, recursive=False)
-    
-    return process_qe_results(files)
+    files = list(folder.glob('*.tsv'))
+    qe_dict = {}
+    default_key = None
+
+    for path in files:
+        result = safely_load_file(path, _process_qe_file)
+        if result:
+            key, channel_data, is_default = result
+            qe_dict[key] = channel_data
+            if is_default and default_key is None:
+                default_key = key
+
+    return (sorted(qe_dict.keys()), qe_dict, default_key)
 
 
 def load_quantum_efficiencies() -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]], Optional[str]]:
@@ -606,36 +340,58 @@ def load_quantum_efficiencies() -> Tuple[List[str], Dict[str, Dict[str, np.ndarr
     )
 
 
+def _process_illuminant_file(path: Path) -> Optional[Tuple[str, np.ndarray, Optional[str]]]:
+    """
+    Process an illuminant file.
+    
+    Args:
+        path: Path to the illuminant file
+        
+    Returns:
+        Tuple of (name, interpolated_data, description) or None if invalid
+    """
+    df = parse_tsv_file(path)
+    
+    if df.shape[1] < 2:
+        return None
+    
+    # Extract wavelength and power data from the first two columns
+    wl = df.iloc[:, 0].astype(float).values
+    power = df.iloc[:, 1].astype(float).values
+    
+    # Interpolate to standard grid
+    interp = np.interp(INTERP_GRID, wl, power, left=np.nan, right=np.nan)
+    name = path.stem
+    
+    # Extract description if available
+    description = None
+    if 'Description' in df.columns and not df['Description'].dropna().empty:
+        description = df['Description'].dropna().iloc[0]
+    
+    return name, interp, description
+
+
 def _load_illuminant_collection_from_files() -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
     """
-    Load illuminant data from files using DirectoryLoader.
+    Load illuminant data from files without using cache.
     
     Returns:
         Tuple of (illuminants, metadata)
     """
     folder = Path('data') / 'illuminants'
     folder.mkdir(exist_ok=True, parents=True)
+
+    illum, meta = {}, {}
     
-    # Create a directory loader for illuminants
-    loader = DirectoryLoader(illuminant_processor)
-    
-    # Process the directory
-    def process_results(metadata_list: List[Dict[str, Any]], values_list: List[np.ndarray]) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
-        illum, meta = {}, {}
-        
-        # Process each result
-        for metadata, values in zip(metadata_list, values_list):
-            name = metadata.get("name", "Unnamed Illuminant")
-            description = metadata.get("Description")
-            
-            illum[name] = values
+    for path in folder.glob('*.tsv'):
+        result = safely_load_file(path, _process_illuminant_file)
+        if result:
+            name, interp, description = result
+            illum[name] = interp
             if description:
                 meta[name] = description
-                
-        return illum, meta
-    
-    # Use DirectoryLoader to process the directory
-    return loader.process_directory(folder, process_results, recursive=False)
+
+    return (illum, meta)
 
 
 def load_illuminant_collection() -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
@@ -647,34 +403,84 @@ def load_illuminant_collection() -> Tuple[Dict[str, np.ndarray], Dict[str, str]]
     )
 
 
+def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
+    """
+    Process a reflector file.
+    
+    Args:
+        path: Path to the reflector file
+        
+    Returns:
+        Tuple of (name, interpolated_data) or None if invalid
+    """
+    df = parse_tsv_file(path)
+    
+    # Check for required columns
+    if "Wavelength" not in df.columns or "Reflectance" not in df.columns:
+        return None
+    
+    # Extract name from the first row if present, else use filename
+    name = None
+    if "Name" in df.columns:
+        name_values = df["Name"].dropna()
+        if len(name_values) > 0:
+            name = name_values.iloc[0]
+    
+    if not name:
+        name = path.stem
+    
+    # Process wavelength and reflectance data
+    wl = df["Wavelength"].astype(float).values
+    refl = df["Reflectance"].astype(float).values
+    
+    # Check for sufficient valid data points
+    valid_mask = ~np.isnan(refl)
+    if np.sum(valid_mask) < 2:
+        return None
+        
+    wl = wl[valid_mask]
+    refl = refl[valid_mask]
+    
+    # Interpolate to standard grid
+    interp_vals = np.interp(INTERP_GRID, wl, refl, left=np.nan, right=np.nan)
+    
+    # Normalize reflectance units: if values look like percents (>1.5), convert to fraction [0..1]
+    # This handles existing files that may have been imported before normalization was added
+    if np.nanmax(interp_vals) > 1.5:
+        interp_vals = interp_vals / 100.0
+    
+    # Round to 3 decimal places to avoid floating point precision issues
+    interp_vals = np.round(interp_vals, 3)
+    
+    return name, interp_vals
+
+
 def _load_reflector_collection_from_files() -> ReflectorCollection:
-    """Load reflector data from files using DirectoryLoader."""
+    """
+    Load reflector data from files without using cache.
+    
+    Returns:
+        ReflectorCollection object
+    """
     folder = Path('data') / 'reflectors'
+    folder.mkdir(exist_ok=True, parents=True)
+
+    files = list(folder.glob("**/*.tsv"))
+    reflectors = []
+    matrix = []
+
+    for path in files:
+        result = safely_load_file(path, _process_reflector_file)
+        if result:
+            name, interp_vals = result
+            reflectors.append(ReflectorSpectrum(name=name, values=interp_vals))
+            matrix.append(interp_vals)
+
+    if not matrix:
+        return create_empty_reflector_collection()
     
-    # Create a directory loader for reflectors
-    loader = DirectoryLoader(reflector_processor)
-    
-    # Process the directory
-    def process_results(metadata_list: List[Dict[str, Any]], values_list: List[np.ndarray]) -> ReflectorCollection:
-        if not metadata_list:
-            return create_empty_reflector_collection()
-        
-        reflectors = []
-        
-        # Create ReflectorSpectrum objects for each valid result
-        for metadata, values in zip(metadata_list, values_list):
-            name = metadata.get("name", "Unnamed Reflector")
-            reflectors.append(ReflectorSpectrum(name=name, values=values))
-        
-        if not reflectors:
-            return create_empty_reflector_collection()
-        
-        # Create the matrix
-        reflector_matrix = np.vstack([r.values for r in reflectors])
-        return ReflectorCollection(reflectors=reflectors, reflector_matrix=reflector_matrix)
-    
-    # Use DirectoryLoader to process the directory
-    return loader.process_directory(folder, process_results, recursive=True)
+    reflector_matrix = np.vstack(matrix)
+    return ReflectorCollection(reflectors=reflectors, reflector_matrix=reflector_matrix)
 
 
 def load_reflector_collection() -> ReflectorCollection:
