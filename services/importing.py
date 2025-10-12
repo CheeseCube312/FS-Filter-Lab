@@ -285,14 +285,25 @@ def import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
             extrap_lower, extrap_upper
         )
 
+        # Create metadata arrays - only fill the first row, leave others empty
+        hex_color_array = [""] * len(new_wavelengths)
+        manufacturer_array = [""] * len(new_wavelengths)
+        name_array = [""] * len(new_wavelengths)
+        filter_number_array = [""] * len(new_wavelengths)
+
+        hex_color_array[0] = meta["hex_color"]
+        manufacturer_array[0] = meta["manufacturer"]
+        name_array[0] = meta["filter_name"]
+        filter_number_array[0] = meta["filter_number"]
+
         # Create DataFrame in tall format
         output_df = pd.DataFrame({
             'Wavelength': new_wavelengths,
             'Transmittance': interpolated,
-            'hex_color': meta["hex_color"],
-            'Manufacturer': meta["manufacturer"],
-            'Name': meta["filter_name"],
-            'Filter Number': meta["filter_number"]
+            'hex_color': hex_color_array,
+            'Manufacturer': manufacturer_array,
+            'Name': name_array,
+            'Filter Number': filter_number_array
         })
 
         # Generate filename and save
