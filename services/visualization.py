@@ -22,9 +22,227 @@ from typing import List, Dict, Optional, Any, Callable, Tuple
 from models.core import ChannelMixerSettings
 from services.channel_mixer import apply_channel_mixing_to_matrix
 
-# ============================================================================
-# MATPLOTLIB REPORT GENERATION
-# ============================================================================
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+# Standard RGB color mappings
+COLOR_MAP = {
+    'R': 'red', 
+    'G': 'green', 
+    'B': 'blue'
+}
+
+# Plot styling constants
+PLOT_HEIGHT_DEFAULT = 400
+PLOT_HEIGHT_WITH_SPECTRUM = 450
+
+# Default matplotlib style configuration
+MPL_STYLE_CONFIG = {
+    "font.family": "DejaVu Sans",
+    "axes.facecolor": "white",
+    "axes.edgecolor": "#CCCCCC",
+    "axes.grid": True,
+    "grid.color": "#EEEEEE",
+    "grid.linestyle": "-",
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "xtick.color": "#444444",
+    "ytick.color": "#444444",
+    "text.color": "#333333",
+    "axes.labelcolor": "#333333",
+    "axes.titleweight": "bold",
+    "axes.titlesize": 14,
+    "axes.labelsize": 12,
+    "legend.frameon": False,
+    "legend.fontsize": 8,
+}
+
+# =============================================================================
+# SHARED UTILITY FUNCTIONS
+# =============================================================================
+
+def apply_color_matrix(rgb_values, matrix):
+    """
+    Apply a 3x3 color transformation matrix to RGB values.
+    
+    Args:
+        rgb_values: RGB array of shape (..., 3)
+        matrix: 3x3 color transformation matrix
+        
+    Returns:
+        Transformed RGB values
+    """
+    # Reshape input to 2D array (n_pixels, 3)
+    original_shape = rgb_values.shape
+    pixels = rgb_values.reshape(-1, 3)
+    
+    # Apply matrix transformation
+    transformed = np.dot(pixels, matrix.T)
+    
+    # Reshape back to original dimensions
+    return transformed.reshape(original_shape)
+
+
+def _calculate_channel_responses(
+    transmission: np.ndarray,
+    qe_data: Dict[str, np.ndarray],
+    visible_channels: Dict[str, bool],
+    white_balance_gains: Dict[str, float],
+    apply_white_balance: bool,
+    channel_mixer: Optional[ChannelMixerSettings] = None
+) -> Dict[str, np.ndarray]:
+    """
+    Calculate channel responses with optional white balancing and channel mixing.
+    
+    Args:
+        transmission: Filter transmission data
+        qe_data: Dictionary of QE data by channel
+        visible_channels: Dictionary of channel visibility flags
+        white_balance_gains: Dictionary of white balance gains by channel
+        apply_white_balance: Whether to apply white balance
+        channel_mixer: Optional channel mixer settings
+        
+    Returns:
+        Dictionary of channel responses
+    """
+    # Compute all responses
+    responses = {}
+    for channel, qe_curve in qe_data.items():
+        if not visible_channels.get(channel, True):
+            continue
+            
+        # Calculate response
+        response = transmission * qe_curve
+        
+        # Apply white balance if requested
+        if apply_white_balance:
+            wb_gain = white_balance_gains.get(channel, 1.0)
+            response = response / wb_gain
+        
+        responses[channel] = response
+    
+    # Apply channel mixing if enabled
+    if channel_mixer is not None and channel_mixer.enabled and responses:
+        from services.channel_mixer import apply_channel_mixing_to_responses
+        responses = apply_channel_mixing_to_responses(responses, channel_mixer)
+    
+    return responses
+
+
+def _calculate_spectral_colors(
+    wavelengths: np.ndarray, 
+    r_channel: np.ndarray, 
+    g_channel: np.ndarray, 
+    b_channel: np.ndarray,
+    saturation_scaling_factor: float = 5.0, 
+    min_saturation: float = 0.15
+) -> np.ndarray:
+    """
+    Calculate spectral colors for visualization.
+    
+    Args:
+        wavelengths: Array of wavelength values
+        r_channel: Red channel response at each wavelength
+        g_channel: Green channel response at each wavelength
+        b_channel: Blue channel response at each wavelength
+        saturation_scaling_factor: Controls color saturation intensity
+        min_saturation: Minimum saturation to maintain some color
+        
+    Returns:
+        RGB matrix of shape (len(wavelengths), 3) with values in range [0, 1]
+    """
+    # Stack RGB channels and handle NaN/infinity values
+    rgb_matrix = np.stack([r_channel, g_channel, b_channel], axis=1)
+    rgb_matrix = np.nan_to_num(rgb_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # Calculate channel sum and valid signals
+    rgb_sum = np.sum(rgb_matrix, axis=1, keepdims=True)
+    valid_mask = rgb_sum.flatten() > 0.001
+    
+    # Only process valid signals
+    if not np.any(valid_mask):
+        return np.zeros_like(rgb_matrix)
+    
+    # Normalize colors by intensity to get color direction
+    norm_rgb = np.zeros_like(rgb_matrix)
+    norm_rgb[valid_mask] = rgb_matrix[valid_mask] / rgb_sum[valid_mask]
+    
+    # Calculate color saturation (max channel difference)
+    # Simple approach: average absolute difference between channels
+    max_channel = np.max(norm_rgb, axis=1, keepdims=True)
+    min_channel = np.min(norm_rgb, axis=1, keepdims=True)
+    color_saturation = np.clip((max_channel - min_channel) * saturation_scaling_factor, 0, 1)
+    
+    # Apply minimum saturation
+    saturation = min_saturation + (1.0 - min_saturation) * color_saturation
+    
+    # Calculate relative brightness for each wavelength
+    brightness = np.sum(rgb_matrix, axis=1, keepdims=True)
+    max_brightness = np.max(brightness) if np.max(brightness) > 0 else 1.0
+    brightness_factor = brightness / max_brightness
+    
+    # Apply brightness to normalized colors
+    rgb_final = norm_rgb * brightness_factor
+    
+    # Normalize to use full dynamic range
+    max_val = np.max(rgb_final) if np.max(rgb_final) > 0 else 1.0
+    if max_val > 0:
+        rgb_final = rgb_final / max_val
+    
+    return np.clip(rgb_final, 0.0, 1.0)
+
+
+def prepare_rgb_for_display(
+    rgb_values: np.ndarray,
+    saturation_level: float = 1.0,
+    auto_exposure: bool = True
+) -> np.ndarray:
+    """
+    Prepare RGB values for display with camera-realistic normalization.
+    
+    This function mimics real camera sensor behavior where each channel
+    saturates independently, rather than scaling all channels together.
+    
+    Args:
+        rgb_values: RGB array of any shape with last dimension = 3
+        saturation_level: Maximum sensor response level (default 1.0)
+        auto_exposure: If True, scale to use full dynamic range
+        
+    Returns:
+        RGB array normalized for display in range [0.0, 1.0]
+    """
+    # Handle negative values by clamping to zero (like real sensors)
+    rgb_clamped = np.maximum(rgb_values, 0.0)
+    
+    if auto_exposure:
+        # Auto-exposure: scale to use full dynamic range without clipping
+        # Find the maximum value that would cause any channel to saturate
+        max_val = np.max(rgb_clamped)
+        if max_val > 0:
+            # Scale so the brightest pixel reaches saturation_level
+            exposure_scale = saturation_level / max_val
+            rgb_exposed = rgb_clamped * exposure_scale
+        else:
+            rgb_exposed = rgb_clamped
+    else:
+        rgb_exposed = rgb_clamped
+    
+    # Apply sensor saturation: each channel clips independently
+    rgb_saturated = np.minimum(rgb_exposed, saturation_level)
+    
+    # Final normalization for display (0-1 range)
+    if saturation_level > 0:
+        rgb_normalized = rgb_saturated / saturation_level
+    else:
+        rgb_normalized = np.zeros_like(rgb_saturated)
+    
+    return np.clip(rgb_normalized, 0.0, 1.0)
+
+
+# =============================================================================
+# MATPLOTLIB VISUALIZATION
+# =============================================================================
 
 def setup_matplotlib_style():
     """Set up matplotlib style for report generation."""
@@ -32,25 +250,19 @@ def setup_matplotlib_style():
         plt.style.use("seaborn-v0_8-whitegrid")
     except OSError:
         plt.style.use("seaborn-whitegrid")
-    plt.rcParams.update({
-        "font.family": "DejaVu Sans",
-        "axes.facecolor": "white",
-        "axes.edgecolor": "#CCCCCC",
-        "axes.grid": True,
-        "grid.color": "#EEEEEE",
-        "grid.linestyle": "-",
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "xtick.color": "#444444",
-        "ytick.color": "#444444",
-        "text.color": "#333333",
-        "axes.labelcolor": "#333333",
-        "axes.titleweight": "bold",
-        "axes.titlesize": 14,
-        "axes.labelsize": 12,
-        "legend.frameon": False,
-        "legend.fontsize": 8,
-    })
+    plt.rcParams.update(MPL_STYLE_CONFIG)
+
+
+def add_filter_curve_to_matplotlib(ax, x, y, mask, label, color):
+    """Add a filter curve to a matplotlib axes."""
+    # Plot main curve
+    ax.plot(x, y, color=color, linewidth=2, label=label)
+    
+    # Add extrapolated regions if mask exists
+    if mask is not None and np.any(mask):
+        extrap_y = y.copy()
+        extrap_y[~mask] = np.nan
+        ax.plot(x, extrap_y, color=color, linewidth=2, linestyle='--', alpha=0.7)
 
 
 def generate_report_png(
@@ -183,7 +395,6 @@ def generate_report_png(
     ax4 = fig.add_subplot(gs[4])
     maxresp = 0
     stack = {}
-    color_map = {'R': 'red', 'G': 'green', 'B': 'blue'}
     # Plot in correct RGB order
     for ch in ['R', 'G', 'B']:
         qe = current_qe.get(ch)
@@ -196,7 +407,7 @@ def generate_report_png(
             resp,
             label=f"{ch} Channel",
             lw=2,
-            color=color_map[ch]
+            color=COLOR_MAP[ch]
         )
         maxresp = max(maxresp, np.nanmax(resp))
         stack[ch] = resp
@@ -247,21 +458,130 @@ def generate_report_png(
     return {'bytes': buf.getvalue(), 'name': fname}
 
 
-def add_filter_curve_to_matplotlib(ax, x, y, mask, label, color):
-    """Add a filter curve to a matplotlib axes."""
-    # Plot main curve
-    ax.plot(x, y, color=color, linewidth=2, label=label)
+# =============================================================================
+# PLOTLY VISUALIZATION
+# =============================================================================
+
+def apply_plotly_default_style(fig, title, x_title="Wavelength (nm)", y_title="Response", height=None):
+    """Apply consistent default styling to Plotly figures."""
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_title,
+        yaxis_title=y_title,
+        template="plotly_white",
+        height=height or PLOT_HEIGHT_DEFAULT,
+        hovermode='x unified'
+    )
+    return fig
+
+
+def add_filter_curve_to_plotly(fig, x, y, mask, label, color):
+    """Add a filter curve to an existing plotly figure."""
+    # Convert log scale if needed
+    y_display = y.copy()
+    
+    # Add main curve
+    fig.add_trace(go.Scatter(
+        x=x,
+        y=y_display,
+        mode='lines',
+        name=label,
+        line=dict(color=color, width=2),
+        showlegend=True
+    ))
     
     # Add extrapolated regions if mask exists
     if mask is not None and np.any(mask):
-        extrap_y = y.copy()
+        extrap_y = y_display.copy()
         extrap_y[~mask] = np.nan
-        ax.plot(x, extrap_y, color=color, linewidth=2, linestyle='--', alpha=0.7)
+        
+        fig.add_trace(go.Scatter(
+            x=x,
+            y=extrap_y,
+            mode='lines',
+            name=f'{label} (extrapolated)',
+            line=dict(color=color, width=2, dash='dot'),
+            showlegend=False
+        ))
 
 
-# ============================================================================
-# PLOTLY INTERACTIVE PLOTTING
-# ============================================================================
+def _add_spectrum_strip_to_plot(
+    fig: go.Figure,
+    wavelengths: np.ndarray,
+    rgb_matrix: np.ndarray,
+    relative_brightness: np.ndarray,
+    y_position: float
+) -> None:
+    """
+    Add a spectrum strip to a plotly figure.
+    
+    Args:
+        fig: The plotly figure to add the spectrum strip to
+        wavelengths: Array of wavelength values
+        rgb_matrix: RGB color matrix of shape (len(wavelengths), 3)
+        relative_brightness: Relative brightness at each wavelength
+        y_position: Y-position where to place the spectrum strip
+    """
+    # Convert RGB values to integers for color strings
+    rgb_colors_int = np.clip(rgb_matrix * 255.0, 0, 255).astype(int)
+    
+    # Create color strings for plotly
+    colors = [
+        f'rgb({int(r)},{int(g)},{int(b)})' 
+        for r, g, b in rgb_colors_int
+    ]
+    
+    # Create hover text with brightness information
+    brightness_pcts = (relative_brightness * 100).astype(int)
+    hover_texts = [
+        f"Wavelength: {wl} nm<br>Relative brightness: {br_pct}%" 
+        for wl, br_pct in zip(wavelengths, brightness_pcts)
+    ]
+    
+    # Add the spectrum strip to the figure
+    fig.add_trace(go.Scatter(
+        x=wavelengths,
+        y=[y_position] * len(wavelengths),
+        mode='markers',
+        marker=dict(
+            size=9,
+            color=colors,
+            line=dict(width=0),
+            symbol='square'
+        ),
+        text=hover_texts,
+        hoverinfo='text',
+        showlegend=False,
+        name='Spectrum'
+    ))
+
+
+def _update_response_plot_layout(
+    fig: go.Figure,
+    has_spectrum_strip: bool,
+    is_white_balanced: bool,
+    is_channel_mixed: bool
+) -> None:
+    """
+    Update the layout of a sensor response plot.
+    
+    Args:
+        fig: The plotly figure to update
+        has_spectrum_strip: Whether the plot has a spectrum strip
+        is_white_balanced: Whether white balancing is applied
+        is_channel_mixed: Whether channel mixing is applied
+    """
+    # Update title to reflect current state
+    wb_status = " (White Balanced)" if is_white_balanced else ""
+    mixer_status = " (Channel Mixed)" if is_channel_mixed else ""
+    title = f"Sensor Response{wb_status}{mixer_status}"
+    
+    # Determine plot height based on contents
+    plot_height = PLOT_HEIGHT_WITH_SPECTRUM if has_spectrum_strip else PLOT_HEIGHT_DEFAULT
+    
+    # Apply consistent styling
+    apply_plotly_default_style(fig, title, height=plot_height)
+
 
 def create_filter_response_plot(
     interp_grid: np.ndarray,
@@ -320,20 +640,11 @@ def create_filter_response_plot(
     
     # Update layout
     y_title = "Light Loss (stops)" if log_stops else "Transmission"
-    layout_update = {
-        'title': "Filter Response",
-        'xaxis_title': "Wavelength (nm)",
-        'yaxis_title': y_title,
-        'template': "plotly_white",
-        'height': 400,
-        'hovermode': 'x unified'
-    }
+    fig = apply_plotly_default_style(fig, "Filter Response", y_title=y_title)
     
     # Invert y-axis for log view (high transmission = low stops = bottom of plot)
     if log_stops:
-        layout_update['yaxis'] = {'autorange': 'reversed'}
-    
-    fig.update_layout(**layout_update)
+        fig.update_layout(yaxis={'autorange': 'reversed'})
     
     return fig
 
@@ -346,64 +657,52 @@ def create_sensor_response_plot(
     white_balance_gains: Dict[str, float],
     apply_white_balance: bool,
     target_profile: Optional[Any],
-    channel_mixer: Optional[ChannelMixerSettings] = None
+    channel_mixer: Optional[ChannelMixerSettings] = None,
+    # Added parameters for configurability
+    spectrum_strip_height_pct: float = 0.05,
+    spectrum_strip_position_pct: float = 1.02,
+    saturation_scaling_factor: float = 5.0,
+    min_saturation: float = 0.15
 ) -> go.Figure:
     """Create a plotly figure showing sensor response with optional channel mixing."""
     fig = go.Figure()
     
-    colors = {'R': 'red', 'G': 'green', 'B': 'blue'}
+    # Calculate channel responses
+    responses = _calculate_channel_responses(
+        transmission, qe_data, visible_channels, 
+        white_balance_gains, apply_white_balance, channel_mixer
+    )
     
-    # First, compute all responses
-    responses = {}
-    for channel, qe_curve in qe_data.items():
-        if not visible_channels.get(channel, True):
-            continue
-            
-        # Calculate response
-        response = transmission * qe_curve
-        
-        # Apply white balance if requested
-        if apply_white_balance:
-            wb_gain = white_balance_gains.get(channel, 1.0)
-            # White balance gains represent response ratios, so we need the inverse to balance
-            response = response / wb_gain
-        
-        responses[channel] = response
-    
-    # Apply channel mixing if enabled
-    if channel_mixer is not None and channel_mixer.enabled and responses:
-        from services.channel_mixer import apply_channel_mixing_to_responses
-        responses = apply_channel_mixing_to_responses(responses, channel_mixer)
-    
-    # Plot the (potentially mixed) responses
+    # Plot each channel response
     for channel, response in responses.items():
         fig.add_trace(go.Scatter(
             x=interp_grid,
             y=response,
             mode='lines',
             name=f'{channel} Channel',
-            line=dict(color=colors.get(channel, 'gray'), width=2),
+            line=dict(color=COLOR_MAP.get(channel, 'gray'), width=2),
             showlegend=True
         ))
     
     # Add spectrum strip if we have RGB data
     if len(responses) >= 3 and 'R' in responses and 'G' in responses and 'B' in responses:
-        # Create RGB matrix for spectrum strip (same as PNG report)
-        rgb_matrix = np.stack([
-            responses.get('R', np.zeros_like(interp_grid)),
-            responses.get('G', np.zeros_like(interp_grid)),
-            responses.get('B', np.zeros_like(interp_grid))
-        ], axis=1)
+        # Get channel responses (camera sensitivity to each wavelength)
+        r_channel = responses.get('R', np.zeros_like(interp_grid))
+        g_channel = responses.get('G', np.zeros_like(interp_grid))
+        b_channel = responses.get('B', np.zeros_like(interp_grid))
         
-        # Normalize RGB matrix
-        max_val = np.nanmax(rgb_matrix)
-        # Handle NaN and infinity values  
-        rgb_matrix = np.nan_to_num(rgb_matrix, nan=0.0, posinf=0.0, neginf=0.0)
-        if max_val > 0 and np.isfinite(max_val):
-            rgb_matrix = rgb_matrix / max_val
+        # Create RGB matrix from responses and process it for display
+        rgb_matrix = _calculate_spectral_colors(
+            interp_grid, 
+            r_channel, g_channel, b_channel,
+            saturation_scaling_factor=saturation_scaling_factor, 
+            min_saturation=min_saturation
+        )
         
-        # Clip to valid RGB range [0, 1]
-        rgb_matrix = np.clip(rgb_matrix, 0.0, 1.0)
+        # Calculate brightness for hover information
+        brightness = np.sum(rgb_matrix, axis=1)
+        max_brightness = np.max(brightness) if np.max(brightness) > 0 else 1.0
+        relative_brightness = brightness / max_brightness
         
         # Find the maximum response for positioning the spectrum strip
         max_response = 1.0
@@ -414,38 +713,17 @@ def create_sensor_response_plot(
                 if np.isfinite(response_max) and response_max > max_response:
                     max_response = response_max
         
-        # Convert RGB matrix to format suitable for Plotly (need to create an image)
-        # Create spectrum strip as a thin horizontal band
-        spectrum_height = max_response * 0.05  # 5% of max response height
-        spectrum_y_pos = max_response * 1.02   # Position slightly above the curves
+        # Calculate spectrum strip position
+        spectrum_y_pos = max_response * spectrum_strip_position_pct
         
-        # Convert RGB values to safe integer colors for heatmap
-        rgb_colors_normalized = rgb_matrix * 255.0
-        rgb_colors_int = np.clip(rgb_colors_normalized, 0, 255).astype(int)
-        
-        # Create a simple color strip using scatter plot for better compatibility
-        # Create color strings, ensuring all values are valid
-        colors = []
-        for i in range(len(interp_grid)):
-            r = max(0, min(255, int(rgb_colors_int[i, 0])))
-            g = max(0, min(255, int(rgb_colors_int[i, 1])))  
-            b = max(0, min(255, int(rgb_colors_int[i, 2])))
-            colors.append(f'rgb({r},{g},{b})')
-            
-        fig.add_trace(go.Scatter(
-            x=interp_grid,
-            y=[spectrum_y_pos] * len(interp_grid),
-            mode='markers',
-            marker=dict(
-                size=9,
-                color=colors,
-                line=dict(width=0),
-                symbol='square'
-            ),
-            showlegend=False,
-            name='Spectrum',
-            hovertemplate='Wavelength: %{x} nm<br>RGB: %{marker.color}<extra></extra>'
-        ))
+        # Add spectrum strip to plot
+        _add_spectrum_strip_to_plot(
+            fig, 
+            interp_grid, 
+            rgb_matrix, 
+            relative_brightness, 
+            spectrum_y_pos
+        )
     
     # Add target profile if provided
     if target_profile is not None:
@@ -458,54 +736,61 @@ def create_sensor_response_plot(
             showlegend=True
         ))
     
-    # Update title to reflect current state
-    wb_status = " (White Balanced)" if apply_white_balance else ""
-    mixer_status = " (Channel Mixed)" if (channel_mixer and channel_mixer.enabled) else ""
-    
-    # Determine final height - if spectrum strip is present, add space for it
-    plot_height = 450 if len(responses) >= 3 else 400
-    
-    # Update layout
-    fig.update_layout(
-        title=f"Sensor Response{wb_status}{mixer_status}",
-        xaxis_title="Wavelength (nm)",
-        yaxis_title="Response",
-        template="plotly_white",
-        height=plot_height,
-        hovermode='x unified'
+    # Update layout with appropriate title and settings
+    _update_response_plot_layout(
+        fig, 
+        len(responses) >= 3,
+        apply_white_balance, 
+        channel_mixer and channel_mixer.enabled
     )
     
     return fig
 
 
-def add_filter_curve_to_plotly(fig, x, y, mask, label, color):
-    """Add a filter curve to an existing plotly figure."""
-    # Convert log scale if needed
-    y_display = y.copy()
+def create_qe_figure(
+    interp_grid: np.ndarray,
+    qe_data: Dict[str, np.ndarray],
+    visible_channels: Dict[str, bool],
+    height: int = 300
+) -> go.Figure:
+    """Create a QE response figure."""
+    fig = go.Figure()
     
-    # Add main curve
+    for channel, curve in qe_data.items():
+        if visible_channels.get(channel, True):
+            fig.add_trace(go.Scatter(
+                x=interp_grid,
+                y=curve,
+                mode='lines',
+                name=f'{channel} QE',
+                line=dict(color=COLOR_MAP.get(channel, 'gray'), width=2)
+            ))
+    
+    apply_plotly_default_style(fig, "Quantum Efficiency", y_title="QE", height=height)
+    
+    return fig
+
+
+def create_illuminant_figure(
+    interp_grid: np.ndarray,
+    illuminant: np.ndarray,
+    illuminant_name: str,
+    height: int = 300
+) -> go.Figure:
+    """Create an illuminant figure."""
+    fig = go.Figure()
+    
     fig.add_trace(go.Scatter(
-        x=x,
-        y=y_display,
+        x=interp_grid,
+        y=illuminant,
         mode='lines',
-        name=label,
-        line=dict(color=color, width=2),
-        showlegend=True
+        name=illuminant_name,
+        line=dict(color='orange', width=2)
     ))
     
-    # Add extrapolated regions if mask exists
-    if mask is not None and np.any(mask):
-        extrap_y = y_display.copy()
-        extrap_y[~mask] = np.nan
-        
-        fig.add_trace(go.Scatter(
-            x=x,
-            y=extrap_y,
-            mode='lines',
-            name=f'{label} (extrapolated)',
-            line=dict(color=color, width=2, dash='dot'),
-            showlegend=False
-        ))
+    apply_plotly_default_style(fig, "Illuminant Spectrum", y_title="Relative Power", height=height)
+    
+    return fig
 
 
 def create_sparkline_plot(
@@ -538,110 +823,3 @@ def create_sparkline_plot(
     )
     
     return fig
-
-
-def create_qe_figure(
-    interp_grid: np.ndarray,
-    qe_data: Dict[str, np.ndarray],
-    visible_channels: Dict[str, bool],
-    height: int = 300
-) -> go.Figure:
-    """Create a QE response figure."""
-    fig = go.Figure()
-    
-    colors = {'R': 'red', 'G': 'green', 'B': 'blue'}
-    
-    for channel, curve in qe_data.items():
-        if visible_channels.get(channel, True):
-            fig.add_trace(go.Scatter(
-                x=interp_grid,
-                y=curve,
-                mode='lines',
-                name=f'{channel} QE',
-                line=dict(color=colors.get(channel, 'gray'), width=2)
-            ))
-    
-    fig.update_layout(
-        title="Quantum Efficiency",
-        xaxis_title="Wavelength (nm)",
-        yaxis_title="QE",
-        height=height,
-        template="plotly_white"
-    )
-    
-    return fig
-
-
-def create_illuminant_figure(
-    interp_grid: np.ndarray,
-    illuminant: np.ndarray,
-    illuminant_name: str,
-    height: int = 300
-) -> go.Figure:
-    """Create an illuminant figure."""
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=interp_grid,
-        y=illuminant,
-        mode='lines',
-        name=illuminant_name,
-        line=dict(color='orange', width=2)
-    ))
-    
-    fig.update_layout(
-        title="Illuminant Spectrum",
-        xaxis_title="Wavelength (nm)",
-        yaxis_title="Relative Power",
-        height=height,
-        template="plotly_white"
-    )
-    
-    return fig
-
-
-def prepare_rgb_for_display(
-    rgb_values: np.ndarray,
-    saturation_level: float = 1.0,
-    auto_exposure: bool = True
-) -> np.ndarray:
-    """
-    Prepare RGB values for display with camera-realistic normalization.
-    
-    This function mimics real camera sensor behavior where each channel
-    saturates independently, rather than scaling all channels together.
-    
-    Args:
-        rgb_values: RGB array of any shape with last dimension = 3
-        saturation_level: Maximum sensor response level (default 1.0)
-        auto_exposure: If True, scale to use full dynamic range
-        
-    Returns:
-        RGB array normalized for display in range [0.0, 1.0]
-    """
-    # Handle negative values by clamping to zero (like real sensors)
-    rgb_clamped = np.maximum(rgb_values, 0.0)
-    
-    if auto_exposure:
-        # Auto-exposure: scale to use full dynamic range without clipping
-        # Find the maximum value that would cause any channel to saturate
-        max_val = np.max(rgb_clamped)
-        if max_val > 0:
-            # Scale so the brightest pixel reaches saturation_level
-            exposure_scale = saturation_level / max_val
-            rgb_exposed = rgb_clamped * exposure_scale
-        else:
-            rgb_exposed = rgb_clamped
-    else:
-        rgb_exposed = rgb_clamped
-    
-    # Apply sensor saturation: each channel clips independently
-    rgb_saturated = np.minimum(rgb_exposed, saturation_level)
-    
-    # Final normalization for display (0-1 range)
-    if saturation_level > 0:
-        rgb_normalized = rgb_saturated / saturation_level
-    else:
-        rgb_normalized = np.zeros_like(rgb_saturated)
-    
-    return np.clip(rgb_normalized, 0.0, 1.0)
