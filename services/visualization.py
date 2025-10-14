@@ -797,27 +797,68 @@ def create_sparkline_plot(
     x_data: np.ndarray,
     y_data: np.ndarray,
     color: str = "blue",
-    height: int = 100,
+    height: int = 150,  # Increased height for better visibility
     width: int = 300
 ) -> go.Figure:
-    """Create a small sparkline plot."""
+    """Create a small sparkline plot with grid and axes."""
     fig = go.Figure()
+    
+    # Convert transmission values to percentage for display
+    y_data_pct = y_data * 100
     
     fig.add_trace(go.Scatter(
         x=x_data,
-        y=y_data,
+        y=y_data_pct,
         mode='lines',
         line=dict(color=color, width=2),
         showlegend=False
     ))
     
+    # Calculate reasonable tick values for wavelength axis
+    x_min, x_max = int(min(x_data)), int(max(x_data))
+    x_range = x_max - x_min
+    
+    # Determine appropriate tick interval based on range
+    if x_range > 500:
+        x_tick_interval = 200
+    elif x_range > 200:
+        x_tick_interval = 100
+    else:
+        x_tick_interval = 50
+    
+    x_ticks = list(range(
+        x_min + x_tick_interval - (x_min % x_tick_interval),
+        x_max,
+        x_tick_interval
+    ))
+    
     fig.update_layout(
         height=height,
         width=width,
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin=dict(l=40, r=10, t=10, b=30),  # Increased margins for axes
         showlegend=False,
-        xaxis=dict(showgrid=False, showticklabels=False),
-        yaxis=dict(showgrid=False, showticklabels=False),
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(200,200,200,0.4)',
+            showticklabels=True,
+            tickvals=x_ticks,
+            title=dict(
+                text="Wavelength (nm)",
+                font=dict(size=10)
+            ),
+            tickfont=dict(size=8)
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(200,200,200,0.4)',
+            showticklabels=True,
+            title=dict(
+                text="Transmission (%)",
+                font=dict(size=10)
+            ),
+            tickfont=dict(size=8),
+            range=[0, 100]  # Set y-axis range to 0-100%
+        ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)"
     )

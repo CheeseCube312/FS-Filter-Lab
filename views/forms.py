@@ -12,6 +12,12 @@ from models.constants import INTERP_GRID
 from views.ui_utils import is_dark_color, is_valid_hex_color, handle_error
 from services.visualization import create_sparkline_plot
 
+# Cache the sparkline plot to improve performance when toggling filter details
+@st.cache_data
+def cached_create_sparkline_plot(wavelengths, transmission, color):
+    """Cached version of create_sparkline_plot to improve performance."""
+    return create_sparkline_plot(wavelengths, transmission, color=color)
+
 
 # -- Filter & Sort Utilities -----------------------------------------
 
@@ -211,7 +217,8 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
                 show_details = st.toggle("Details", key=toggle_key, label_visibility="collapsed")
 
             if show_details:
-                fig = create_sparkline_plot(INTERP_GRID, filter_matrix[idx, :], color=hex_color)
+                # Use cached version to prevent regenerating the plot on every rerun
+                fig = cached_create_sparkline_plot(INTERP_GRID, filter_matrix[idx, :], color=hex_color)
                 st.plotly_chart(fig, use_container_width=False)
                 st.checkbox("Select this filter", key=f"adv_sel_{idx}")
 
