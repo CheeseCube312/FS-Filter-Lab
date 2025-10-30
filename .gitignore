@@ -2,6 +2,6 @@
 .vscode/
 __pycache__/
 .gitignore
-output
-cache
+output/
+cache/
 data/
