@@ -30,31 +30,34 @@ Architecture:
 - Maintains separation between UI logic and business operations
 - Supports both synchronous and background operation patterns
 """
-import numpy as np
-import streamlit as st
+# Standard library imports
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 
+# Third-party imports
+import numpy as np
+import streamlit as st
+
+# Local imports
 from models.core import FilterCollection, ReflectorCollection
-from models.constants import INTERP_GRID
-
-# Import StateManager for type hints
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from services.state_manager import StateManager
+from models.constants import INTERP_GRID, CACHE_DIR, UI_BUTTONS
 from services.calculations import (
     compute_filter_transmission,
     compute_selected_filter_indices,
-    compute_effective_stops
-)
-from services.calculations import (
+    compute_effective_stops,
     compute_rgb_response,
     compute_white_balance_gains
 )
-from services.visualization import generate_report_png
-from services.visualization import add_filter_curve_to_matplotlib
+from services.visualization import (
+    generate_report_png, add_filter_curve_to_matplotlib, generate_report_png_v2,
+    create_report_config, create_filter_data, create_computation_functions, create_sensor_data
+)
+
+# Type checking imports
+if TYPE_CHECKING:
+    from services.state_manager import StateManager
 
 
 # ----- UTILITY FUNCTIONS -----
@@ -243,27 +246,42 @@ def generate_application_report(
         else {"R": 1.0, "G": 1.0, "B": 1.0}
     )
     
-    # Generate report
-    result = generate_report_png(
+    # Generate report using new data class structure (simplified version)
+    report_config = create_report_config(
         selected_filters=app_state.selected_filters,
         current_qe=app_state.current_qe,
+        camera_name=selected_camera or "UnknownCamera",
+        illuminant_name=app_state.illuminant_name or "UnknownIlluminant",
+        illuminant_curve=illuminant
+    )
+    
+    filter_data = create_filter_data(
         filter_matrix=filter_collection.filter_matrix,
         df=filter_collection.df,
         display_to_index=filter_collection.get_display_to_index_map(),
+        masks=filter_collection.extrapolated_masks,
+        interp_grid=INTERP_GRID
+    )
+    
+    computation_fns = create_computation_functions(
         compute_selected_indices_fn=lambda sel: selected_indices,
         compute_filter_transmission_fn=lambda idxs: compute_filter_transmission(
             idxs, filter_collection.filter_matrix
         ),
         compute_effective_stops_fn=effective_stops_fn,
         compute_white_balance_gains_fn=white_balance_fn,
-        masks=filter_collection.extrapolated_masks,
         add_curve_fn=add_filter_curve_to_matplotlib,
-        interp_grid=INTERP_GRID,
-        sensor_qe=sensor_qe,
-        camera_name=selected_camera or "UnknownCamera",
-        illuminant_name=app_state.illuminant_name or "UnknownIlluminant",
-        sanitize_fn=sanitize_filename_component,
-        illuminant_curve=illuminant
+        sanitize_fn=sanitize_filename_component
+    )
+    
+    sensor_data = create_sensor_data(sensor_qe=sensor_qe)
+    
+    # Use new simplified interface (4 parameters instead of 17)
+    result = generate_report_png_v2(
+        report_config=report_config,
+        filter_data=filter_data,
+        computation_fns=computation_fns,
+        sensor_data=sensor_data
     )
     
     if result:
@@ -305,10 +323,9 @@ def setup_report_download(app_state: "StateManager") -> None:
     """
     last_export = app_state.last_export
     if last_export and last_export.get("bytes"):
-        st.sidebar.download_button(
-            label="⬇️ Download Last Report",
+        st.download_button(
+            label=UI_BUTTONS['download_report'],
             data=last_export["bytes"],
             file_name=last_export["name"],
-            mime="image/png",
-            use_container_width=True
+            mime="image/png"
         )

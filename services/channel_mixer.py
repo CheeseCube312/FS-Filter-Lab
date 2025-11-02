@@ -4,9 +4,11 @@ Channel Mixer Service for FS FilterLab.
 This module provides channel mixing functionality for RGB response manipulation,
 commonly used in IR photography for channel swapping and false color enhancement.
 """
+# Third-party imports
 import numpy as np
 from typing import Dict, List, Optional, Any
 
+# Local imports
 from models.constants import DEFAULT_CHANNEL_MIXER
 from models.core import ChannelMixerSettings
 

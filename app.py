@@ -1,21 +1,23 @@
 """
 FS FilterLab - Optical Filter Analysis Tool
 """
-import streamlit as st
+# Standard library imports
 from pathlib import Path
 
+# Third-party imports
+import streamlit as st
+
+# Local imports
 from models.constants import CACHE_DIR
-
-# Configure Streamlit
-st.set_page_config(page_title="FS FilterLab", layout="wide")
-Path(CACHE_DIR).mkdir(exist_ok=True)
-
-# Import main application components
 from services.app_operations import initialize_application_data
 from views.main_content import render_main_content
 from views.sidebar import render_sidebar
 from views.state import initialize_session_state, handle_app_actions
 from views.ui_utils import handle_error
+
+# Configure Streamlit
+st.set_page_config(page_title="FS FilterLab", layout="wide")
+Path(CACHE_DIR).mkdir(exist_ok=True)
 
 
 def main():

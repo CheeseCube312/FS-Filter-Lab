@@ -3,18 +3,21 @@ Form-based UI components for FS FilterLab.
 
 This module provides UI components for forms, including search and import interfaces.
 """
+# Third-party imports
 import streamlit as st
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Any, Optional
 
-from models.constants import INTERP_GRID
+# Local imports
+from models.constants import INTERP_GRID, UI_BUTTONS, UI_WARNING_MESSAGES
 from views.ui_utils import is_dark_color, is_valid_hex_color, handle_error
 from services.visualization import create_sparkline_plot
 
 # Cache the sparkline plot to improve performance when toggling filter details
 @st.cache_data
 def cached_create_sparkline_plot(wavelengths, transmission, color):
+    """Cached version of create_sparkline_plot to improve performance."""
     """Cached version of create_sparkline_plot to improve performance."""
     return create_sparkline_plot(wavelengths, transmission, color=color)
 
@@ -61,15 +64,15 @@ def filter_by_trans_at_wavelength(
     if idx.size == 0:
         handle_error(f"Wavelength {wavelength} nm not in interpolation grid")
         return df, np.zeros(len(df))
-    i = idx[0]
+    selected_index = idx[0]
 
     # Make sure we're filtering the correct rows in the matrix
     df_indices = df.index.to_numpy()
-    vals = matrix[df_indices, i]
+    transmission_values = matrix[df_indices, selected_index]
 
-    mask = (vals >= min_t) & (vals <= max_t)
+    transmission_mask = (transmission_values >= min_t) & (transmission_values <= max_t)
 
-    return df.iloc[mask], vals[mask]
+    return df.iloc[transmission_mask], transmission_values[transmission_mask]
 
 
 def sort_by_hex_rainbow(df: pd.DataFrame, hex_col: str = "Hex Color") -> pd.DataFrame:
@@ -97,7 +100,7 @@ def sort_by_hex_rainbow(df: pd.DataFrame, hex_col: str = "Hex Color") -> pd.Data
     valid_mask = df[hex_col].apply(is_valid_hex_color)
     invalid_rows = df[~valid_mask]
     if not invalid_rows.empty:
-        st.warning(f"⚠ Found {len(invalid_rows)} filters with invalid hex color codes:")
+        st.warning(UI_WARNING_MESSAGES['invalid_hex_colors'].format(count=len(invalid_rows)))
         st.dataframe(invalid_rows[[hex_col, "Filter Number", "Filter Name", "Manufacturer"]])
 
     hsl_df = df[hex_col].apply(hex_to_hsl).apply(pd.Series)
@@ -127,6 +130,13 @@ def sort_by_trans_at_wavelength(df: pd.DataFrame, trans_vals: np.ndarray, ascend
 
 def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
     """
+    Display advanced filter search interface with multiple filter criteria.
+    
+    Args:
+        df: DataFrame containing filter metadata
+        filter_matrix: Matrix of filter transmission data
+    """
+    """
     Render advanced filter search UI.
     
     Args:
@@ -150,7 +160,7 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
         ])
         with cols[4]:
             st.markdown("<div style='margin-top: 28px'></div>", unsafe_allow_html=True)
-            apply_clicked = st.form_submit_button("🔄 Apply")
+            apply_clicked = st.form_submit_button(UI_BUTTONS['apply'])
 
     if apply_clicked:
         st.session_state.update({
@@ -168,24 +178,24 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
     tmax = st.session_state.get("tmax", 100)
     sort_choice = st.session_state.get("sort_choice", "Filter Number")
 
-    df_man = filter_by_manufacturer(df, manufs)
-    df_filt, trans_vals = filter_by_trans_at_wavelength(
-        df_man, INTERP_GRID, filter_matrix, wl, tmin / 100, tmax / 100
+    filters_by_manufacturer = filter_by_manufacturer(df, manufs)
+    filtered_results, transmission_values = filter_by_trans_at_wavelength(
+        filters_by_manufacturer, INTERP_GRID, filter_matrix, wl, tmin / 100, tmax / 100
     )
 
     if sort_choice == "Hex‑Rainbow":
-        df_sorted = sort_by_hex_rainbow(df_filt)
+        sorted_filters = sort_by_hex_rainbow(filtered_results)
     elif sort_choice.startswith("Trans @"):
-        df_sorted = sort_by_trans_at_wavelength(df_filt, trans_vals)
+        sorted_filters = sort_by_trans_at_wavelength(filtered_results, transmission_values)
     elif sort_choice == "Filter Name":
-        df_sorted = df_filt.sort_values("Filter Name")
+        sorted_filters = filtered_results.sort_values("Filter Name")
     else:
-        df_sorted = df_filt.sort_values("Filter Number")
+        sorted_filters = filtered_results.sort_values("Filter Number")
 
     st.markdown("---")
-    st.write(f"**{len(df_sorted)} filters found:**")
+    st.write(f"**{len(sorted_filters)} filters found:**")
 
-    for idx, row in df_sorted.iterrows():
+    for idx, row in sorted_filters.iterrows():
         hex_color = row["Hex Color"]
         if not is_valid_hex_color(hex_color):
             hex_color = "#888888"
@@ -219,21 +229,21 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
             if show_details:
                 # Use cached version to prevent regenerating the plot on every rerun
                 fig = cached_create_sparkline_plot(INTERP_GRID, filter_matrix[idx, :], color=hex_color)
-                st.plotly_chart(fig, use_container_width=False)
+                st.plotly_chart(fig, width='content')
                 st.checkbox("Select this filter", key=f"adv_sel_{idx}")
 
     st.markdown("---")
     col_done, col_cancel = st.columns([1, 1])
     with col_done:
-        if st.button("✅ Done"):
+        if st.button(UI_BUTTONS['done']):
             selected_idxs = [
-                idx for idx in df_sorted.index
+                idx for idx in sorted_filters.index
                 if st.session_state.get(f"adv_sel_{idx}", False)
             ]
             selected_display = [
-                f"{df_sorted.loc[idx, 'Filter Name']} "
-                f"({df_sorted.loc[idx, 'Filter Number']}, "
-                f"{df_sorted.loc[idx, 'Manufacturer']})"
+                f"{sorted_filters.loc[idx, 'Filter Name']} "
+                f"({sorted_filters.loc[idx, 'Filter Number']}, "
+                f"{sorted_filters.loc[idx, 'Manufacturer']})"
                 for idx in selected_idxs
             ]
 
@@ -241,12 +251,12 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
             st.session_state.advanced = False
             st.rerun()
 
-    for idx in df_sorted.index:
+    for idx in sorted_filters.index:
         st.session_state.pop(f"adv_sel_{idx}", None)
         st.session_state.pop(f"filter_toggle_{idx}", None)
 
     with col_cancel:
-        if st.button("✖ Cancel"):
+        if st.button(UI_BUTTONS['cancel']):
             st.session_state.advanced = False
             st.rerun()
 
@@ -254,6 +264,7 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
 # -- Import UI -----------------------------------------
 
 def import_data_form() -> None:
+    """Display the data import form with tabs for different data types."""
     """
     Display data import UI with all import options.
     """
@@ -277,6 +288,7 @@ def import_data_form() -> None:
 
 
 def import_filter_tab():
+    """Display the filter data import interface."""
     """Filter import interface."""
     from services.importing import import_filter_from_csv
     

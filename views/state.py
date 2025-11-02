@@ -33,14 +33,18 @@ The design ensures that complex user workflows are handled consistently
 while maintaining clean separation between UI presentation and business logic.
 """
 
-import streamlit as st
+# Standard library imports
 from pathlib import Path
 from typing import Dict, Any
 
-from models.constants import CACHE_DIR
+# Third-party imports
+import streamlit as st
+
+# Local imports
+from models.constants import CACHE_DIR, UI_SUCCESS_MESSAGES
 from services.app_operations import generate_application_report, rebuild_application_cache
-from views.ui_utils import handle_error, show_info_message, show_success_message
 from services.state_manager import get_state_manager, StateManager
+from views.ui_utils import handle_error, show_info_message, show_success_message
 
 
 def initialize_session_state() -> StateManager:
@@ -117,7 +121,7 @@ def handle_app_actions(actions: Dict[str, Any], state_manager: StateManager, dat
                 selected_camera=selected_camera
             )
             if success:
-                show_success_message("✅ Report generated successfully!")
+                show_success_message(UI_SUCCESS_MESSAGES['report_generated'])
                 st.rerun()
             else:
                 handle_error("Failed to generate report. Check console for details.")
@@ -131,7 +135,7 @@ def handle_app_actions(actions: Dict[str, Any], state_manager: StateManager, dat
             cache_path = Path(CACHE_DIR)
             success = rebuild_application_cache(cache_path)
             if success:
-                show_success_message("✅ Cache rebuilt successfully! Reloading application...")
+                show_success_message(UI_SUCCESS_MESSAGES['cache_rebuilt'])
                 st.rerun()
             else:
                 handle_error("Failed to rebuild cache.")

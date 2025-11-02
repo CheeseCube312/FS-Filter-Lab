@@ -1,17 +1,35 @@
 """
 Data loading services for FS FilterLab.
 """
-import numpy as np
-import pandas as pd
-from pathlib import Path
+# Standard library imports
 import pickle
+from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional, TypeVar, Callable
 
+# Third-party imports
+import numpy as np
+import pandas as pd
+
+# Local imports
 from models import (
     Filter, FilterCollection, TargetProfile,
     ReflectorSpectrum, ReflectorCollection
 )
 from models.constants import CACHE_DIR, DEFAULT_HEX_COLOR, DEFAULT_ILLUMINANT, INTERP_GRID
+
+
+def interpolate_to_standard_grid(wavelengths: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """
+    Interpolate spectral data to the standard wavelength grid.
+    
+    Args:
+        wavelengths: Input wavelength array
+        values: Corresponding spectral values (transmission, power, reflectance, etc.)
+        
+    Returns:
+        Interpolated values on the standard INTERP_GRID
+    """
+    return np.interp(INTERP_GRID, wavelengths, values, left=np.nan, right=np.nan)
 
 # Ensure cache directory exists
 Path(CACHE_DIR).mkdir(exist_ok=True)
@@ -165,7 +183,7 @@ def _process_filter_file(path: Path) -> Optional[Tuple[dict, np.ndarray, np.ndar
         transmittance /= 100.0
     
     # Interpolate to standard grid
-    interp_vals = np.interp(INTERP_GRID, wavelengths, transmittance, left=np.nan, right=np.nan)
+    interp_vals = interpolate_to_standard_grid(wavelengths, transmittance)
     extrap_mask = (INTERP_GRID > 700) if is_lee else np.zeros_like(INTERP_GRID, dtype=bool)
     
     metadata = {
@@ -360,7 +378,7 @@ def _process_illuminant_file(path: Path) -> Optional[Tuple[str, np.ndarray, Opti
     power = df.iloc[:, 1].astype(float).values
     
     # Interpolate to standard grid
-    interp = np.interp(INTERP_GRID, wl, power, left=np.nan, right=np.nan)
+    interp = interpolate_to_standard_grid(wl, power)
     name = path.stem
     
     # Extract description if available
@@ -442,7 +460,7 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     refl = refl[valid_mask]
     
     # Interpolate to standard grid
-    interp_vals = np.interp(INTERP_GRID, wl, refl, left=np.nan, right=np.nan)
+    interp_vals = interpolate_to_standard_grid(wl, refl)
     
     # Normalize reflectance units: if values look like percents (>1.5), convert to fraction [0..1]
     # This handles existing files that may have been imported before normalization was added
