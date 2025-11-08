@@ -4,64 +4,64 @@ Main content display components for FS FilterLab.
 This module consolidates all main content area UI components including
 data displays, charts, and visualizations.
 """
+# Third-party imports
 import streamlit as st
 import numpy as np
 from typing import Dict, List, Optional, Any, Callable
 
+# Local imports
 from models.core import TargetProfile
+from models.constants import UI_INFO_MESSAGES, UI_WARNING_MESSAGES, UI_CHART_TITLES, UI_SECTIONS, UI_LABELS
 
 # ============================================================================
 # CHART RENDERING UTILITIES
 # ============================================================================
 
+def _apply_chart_layout_and_display(fig: Any, width: str, height: Optional[int], description: Optional[str]) -> None:
+    """Helper function to apply layout settings and display chart."""
+    # Apply height if specified
+    if height and hasattr(fig, "update_layout"):
+        fig.update_layout(height=height)
+        
+    # Display the chart
+    st.plotly_chart(fig, width=width)
+    
+    if description:
+        st.markdown(description)
+
+
 def render_chart(
     fig: Any, 
     title: Optional[str] = None, 
     description: Optional[str] = None,
-    use_container_width: bool = True,
+    width: str = 'stretch',
     height: Optional[int] = None
 ) -> None:
     """Render a chart with optional title and description."""
     if title:
         st.subheader(title)
         
-    # Apply height if specified
-    if height and hasattr(fig, "update_layout"):
-        fig.update_layout(height=height)
-        
-    # Display the chart
-    st.plotly_chart(fig, use_container_width=use_container_width)
-    
-    if description:
-        st.markdown(description)
+    _apply_chart_layout_and_display(fig, width, height, description)
 
 
 def render_expandable_chart(
     fig: Any,
     title: str,
     expanded: bool = False,
-    use_container_width: bool = True,
+    width: str = 'stretch',
     height: Optional[int] = None,
     description: Optional[str] = None
 ) -> None:
     """Render a chart within an expandable section."""
     with st.expander(title, expanded=expanded):
-        # Apply height if specified
-        if height and hasattr(fig, "update_layout"):
-            fig.update_layout(height=height)
-            
-        # Display the chart
-        st.plotly_chart(fig, use_container_width=use_container_width)
-        
-        if description:
-            st.markdown(description)
+        _apply_chart_layout_and_display(fig, width, height, description)
 
 
 def render_chart_with_controls(
     fig: Any,
     title: Optional[str] = None,
     control_elements: Dict[str, Callable] = None,
-    use_container_width: bool = True,
+    width: str = 'stretch',
     height: Optional[int] = None,
     description: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -77,15 +77,7 @@ def render_chart_with_controls(
             with cols[i]:
                 control_values[name] = render_fn()
     
-    # Apply height if specified
-    if height and hasattr(fig, "update_layout"):
-        fig.update_layout(height=height)
-        
-    # Display the chart
-    st.plotly_chart(fig, use_container_width=use_container_width)
-    
-    if description:
-        st.markdown(description)
+    _apply_chart_layout_and_display(fig, width, height, description)
     
     return control_values
 
@@ -105,7 +97,8 @@ def transmission_metrics(
     # Check if we have valid data
     valid = ~np.isnan(trans)
     if not valid.any():
-        st.warning(f"Cannot compute average transmission for {label}: insufficient data.")
+        from views.ui_utils import show_warning_message
+        show_warning_message(f"Cannot compute average transmission for {label}: insufficient data.")
         return
     
     # Calculate effective stops
@@ -141,10 +134,9 @@ def deviation_metrics(
     
     if not metrics:
         if target_profile:
-            st.info("ℹ️ No valid overlap with target for deviation calculation.")
-        return
-    
-    # Format metrics for display
+            from views.ui_utils import show_info_message
+            show_info_message(UI_INFO_MESSAGES['no_target_overlap'])
+        return    # Format metrics for display
     formatted = format_deviation_metrics(metrics, target_profile)
     
     # Display metrics
@@ -178,66 +170,99 @@ def white_balance_display(
     )
 
 
-def raw_qe_and_illuminant(
-    interp_grid: np.ndarray,
-    qe_data: Optional[Dict[str, np.ndarray]],
-    illuminant: Optional[np.ndarray],
-    illuminant_name: Optional[str],
-    illuminant_metadata: Dict[str, str],
-    add_trace_fn: Callable
-) -> None:
-    """Display raw QE curves and illuminant in Streamlit expander."""
-    from services.visualization import create_qe_figure, create_illuminant_figure
+def raw_qe_and_illuminant(app_state, data) -> None:
+    """Display raw quantum efficiency and illuminant data charts."""
+    """Display reflectance and illuminant curves in Streamlit expander."""
+    from models.constants import INTERP_GRID
+    from services.visualization import create_illuminant_figure, create_leaf_reflectance_figure, create_single_reflectance_figure
     
-    with st.expander("Show Raw QE and Illuminant Curves"):
-        if qe_data:
-            fig_qe = create_qe_figure(interp_grid, qe_data, {"R": True, "G": True, "B": True})
-            render_chart(
-                fig_qe, 
-                "Sensor Quantum Efficiency (QE)"
+    # Extract needed data
+    reflector_collection = data['reflector_collection']
+    illuminant_metadata = data['illuminant_metadata']
+    
+    with st.expander(UI_SECTIONS['reflectance_illuminant_curves']):
+        # Show leaf reflectance spectra if available
+        if (reflector_collection and 
+            hasattr(reflector_collection, 'reflector_matrix') and 
+            len(reflector_collection.reflector_matrix) >= 4):
+            
+            fig_leaves = create_leaf_reflectance_figure(
+                INTERP_GRID, 
+                reflector_collection.reflector_matrix, 
+                reflector_collection
             )
-        else:
-            st.info("ℹ️ No QE profile loaded.")
-
-        if illuminant is not None and illuminant_name is not None:
-            fig_illum = create_illuminant_figure(interp_grid, illuminant, illuminant_name)
+            
+            if fig_leaves is not None:
+                render_chart(fig_leaves, UI_CHART_TITLES['leaf_reflectance'])
+            else:
+                from views.ui_utils import show_info_message
+                show_info_message(UI_INFO_MESSAGES['leaf_data_required'])
+        
+        # Show selected reflectance spectrum if available
+        selected_reflector_idx = st.session_state.get("selected_reflector_idx", None)
+        if (reflector_collection and 
+            hasattr(reflector_collection, 'reflector_matrix') and
+            selected_reflector_idx is not None and 
+            selected_reflector_idx != "None" and 
+            isinstance(selected_reflector_idx, int) and 
+            selected_reflector_idx < len(reflector_collection.reflector_matrix)):
+            
+            fig_single = create_single_reflectance_figure(
+                INTERP_GRID,
+                reflector_collection.reflector_matrix,
+                reflector_collection,
+                selected_reflector_idx
+            )
+            
+            if fig_single is not None:
+                render_chart(fig_single)
+        
+        # Show illuminant curve
+        if app_state.illuminant is not None and app_state.illuminant_name is not None:
+            fig_illum = create_illuminant_figure(INTERP_GRID, app_state.illuminant, app_state.illuminant_name)
             
             # Description for the illuminant
-            description = None
-            if illuminant_name in illuminant_metadata:
-                description = f"**Description:** {illuminant_metadata[illuminant_name]}"
+            if app_state.illuminant_name in illuminant_metadata:
+                description = f"**Description:** {illuminant_metadata[app_state.illuminant_name]}"
                 st.markdown(description)
                 
             render_chart(
                 fig_illum, 
-                f"Illuminant: {illuminant_name}"
+                f"Illuminant: {app_state.illuminant_name}"
             )
         else:
-            st.info("ℹ️ No illuminant loaded.")
+            from views.ui_utils import show_info_message
+            show_info_message(UI_INFO_MESSAGES['no_illuminant'])
 
 
 def filter_response_display(fig) -> None:
+    """Display filter response chart in an expandable section."""
     """Display filter response plot."""
-    render_chart(fig, title="Combined Filter Response")
+    render_chart(fig, title=UI_CHART_TITLES['combined_filter_response'])
 
 
-def sensor_response_display(fig, apply_white_balance: bool = False) -> bool:
+def sensor_response_display(fig) -> None:
+    """Display sensor response chart in an expandable section."""
     """Display sensor response plot with white balance toggle."""
     
-    # Put the toggle before the chart to avoid recomputation issues
-    new_apply_white_balance = st.checkbox(
-        "Apply White Balance to Response", 
-        key="apply_white_balance_toggle"  # More descriptive key
+    # White balance toggle is widget-controlled and accessed through app_state
+    st.checkbox(
+        UI_LABELS['apply_white_balance'], 
+        key="apply_white_balance_toggle"
     )
     
     # Display the chart
-    render_chart(fig, title="Sensor-Weighted Response (QE × Transmission)")
-    
-    # Return the widget value directly (don't try to manage state manually)
-    return new_apply_white_balance
+    render_chart(fig, title=UI_CHART_TITLES['sensor_weighted_response'])
 
 
 def render_main_content(app_state, data):
+    """
+    Render the main content area of the application.
+    
+    Args:
+        app_state: Application state manager
+        data: Application data dictionary containing collections and calculations
+    """
     """
     Render the main content area of the application.
     
@@ -303,14 +328,7 @@ def render_main_content(app_state, data):
         _render_sensor_analysis(app_state, data, selected_indices)
     
     # Raw QE and illuminant curves
-    raw_qe_and_illuminant(
-        interp_grid=INTERP_GRID,
-        qe_data=app_state.current_qe,
-        illuminant=app_state.illuminant,
-        illuminant_name=app_state.illuminant_name,
-        illuminant_metadata=illuminant_metadata,
-        add_trace_fn=add_filter_curve_to_plotly
-    )
+    raw_qe_and_illuminant(app_state, data)
     
     # Advanced search UI
     if app_state.show_advanced_search:
@@ -373,24 +391,142 @@ def _render_filter_analysis(app_state, filter_collection, selected_indices):
     deviation_metrics(trans, combined, app_state.target_profile)
 
 
-def _render_sensor_analysis(app_state, data, selected_indices):
-    """Render sensor response analysis and reflector previews."""
+def _compute_white_balance(app_state, trans_interp) -> Dict[str, float]:
+    """Compute and update white balance gains."""
+    from services import compute_white_balance_gains
+    
+    wb_gains = app_state.white_balance_gains  # Default gains
+    if app_state.current_qe and app_state.illuminant is not None:
+        # Compute white balance regardless of filter selection
+        wb_gains = compute_white_balance_gains(trans_interp, app_state.current_qe, app_state.illuminant)
+        app_state.white_balance_gains = wb_gains  # Update state with computed gains
+    
+    return wb_gains
+
+
+def _render_sensor_response_plot(app_state, trans_interp, wb_gains) -> None:
+    """Create and display the sensor response plot."""
+    from models.constants import INTERP_GRID
+    from services import create_sensor_response_plot
+    
+    fig_response = create_sensor_response_plot(
+        interp_grid=INTERP_GRID,
+        transmission=trans_interp,
+        qe_data=app_state.current_qe,
+        visible_channels=app_state.rgb_channels_visibility,
+        white_balance_gains=wb_gains,
+        apply_white_balance=app_state.apply_white_balance,
+        target_profile=app_state.target_profile,
+        channel_mixer=app_state.channel_mixer
+    )
+    
+    sensor_response_display(fig_response)
+
+
+def _render_vegetation_preview(app_state, trans_interp, reflector_collection) -> Optional[np.ndarray]:
+    """Render vegetation color preview and return pixels for normalization."""
+    from services.calculations import compute_reflector_preview_colors
+    from views.sidebar import reflector_preview
+    from views.ui_utils import show_warning_message
+    
+    reflector_matrix = reflector_collection.reflector_matrix
+    
+    if len(reflector_matrix) >= 4:
+        pixels = compute_reflector_preview_colors(
+            reflector_matrix, trans_interp, app_state.current_qe, 
+            app_state.illuminant, reflector_collection, app_state.channel_mixer
+        )
+        
+        if pixels is not None:
+            reflector_preview(pixels)
+            return pixels
+        else:
+            show_warning_message(UI_WARNING_MESSAGES['vegetation_preview_required'])
+    else:
+        show_warning_message(UI_WARNING_MESSAGES['vegetation_preview_required'])
+    
+    return None
+
+
+def _render_single_reflector_preview(app_state, trans_interp, reflector_collection, pixels) -> None:
+    """Render single reflector preview if one is selected."""
     import streamlit as st
     
-    from models.constants import INTERP_GRID
-    from services import (
-        compute_active_transmission,
-        compute_white_balance_gains,
-        create_sensor_response_plot
-    )
+    from services.calculations import compute_single_reflector_color
+    from views.sidebar import single_reflector_preview
+    from views.ui_utils import show_info_message
+    
+    reflector_matrix = reflector_collection.reflector_matrix
+    selected_reflector_idx = st.session_state.get("selected_reflector_idx", None)
+    
+    # Validate selection
+    if (selected_reflector_idx is not None and 
+        selected_reflector_idx != "None" and 
+        isinstance(selected_reflector_idx, int) and 
+        selected_reflector_idx < len(reflector_matrix)):
+        
+        single_color = compute_single_reflector_color(
+            reflector_matrix, selected_reflector_idx, trans_interp, 
+            app_state.current_qe, app_state.illuminant, app_state.channel_mixer
+        )
+        
+        if single_color is not None:
+            reflector_name = reflector_collection.reflectors[selected_reflector_idx].name
+            
+            # Determine global normalization scale
+            if pixels is not None:
+                global_max = np.max(pixels)
+            else:
+                # Compute global max from available reflectors
+                all_colors = []
+                for i in range(min(len(reflector_matrix), 4)):
+                    color = compute_single_reflector_color(
+                        reflector_matrix, i, trans_interp,
+                        app_state.current_qe, app_state.illuminant, app_state.channel_mixer
+                    )
+                    if color is not None:
+                        all_colors.append(color)
+                global_max = np.max(all_colors) if all_colors else np.max(single_color)
+            
+            single_reflector_preview(single_color, reflector_name, global_max)
+        else:
+            show_info_message(UI_INFO_MESSAGES['color_compute_failed'])
+
+
+def _render_reflector_previews(app_state, trans_interp, reflector_collection) -> None:
+    """Render all reflector color previews."""
     from services.calculations import (
         is_reflector_data_valid,
-        check_reflector_wavelength_validity,
-        compute_reflector_preview_colors,
-        compute_single_reflector_color
+        check_reflector_wavelength_validity
     )
-    from views.sidebar import reflector_preview, single_reflector_preview
-    from views.ui_utils import show_warning_message, show_info_message
+    from views.ui_utils import show_warning_message
+    
+    # Check if we have the basic requirements for reflector previews
+    if not (app_state.current_qe is not None and 
+            app_state.illuminant is not None and 
+            hasattr(reflector_collection, 'reflector_matrix')):
+        return
+    
+    if not is_reflector_data_valid(reflector_collection):
+        return
+        
+    reflector_matrix = reflector_collection.reflector_matrix
+    
+    if not check_reflector_wavelength_validity(reflector_matrix):
+        show_warning_message(UI_WARNING_MESSAGES['incomplete_reflector_data'])
+    
+    # Render vegetation preview first (returns pixels for normalization)
+    pixels = _render_vegetation_preview(app_state, trans_interp, reflector_collection)
+    
+    # Render single reflector preview using the same normalization
+    _render_single_reflector_preview(app_state, trans_interp, reflector_collection, pixels)
+
+
+def _render_sensor_analysis(app_state, data, selected_indices):
+    """Render sensor response analysis and reflector previews."""
+    from models.constants import INTERP_GRID
+    from services import compute_active_transmission
+    from views.ui_utils import show_info_message
     
     # Extract data
     filter_collection = data['filter_collection'] 
@@ -401,109 +537,17 @@ def _render_sensor_analysis(app_state, data, selected_indices):
         app_state.selected_filters, selected_indices, filter_collection.filter_matrix
     )
     
-    # Compute white balance
-    wb_gains = app_state.white_balance_gains  # Default gains
-    if app_state.selected_filters and app_state.current_qe and app_state.illuminant is not None:
-        wb_gains = compute_white_balance_gains(trans_interp, app_state.current_qe, app_state.illuminant)
-        app_state.white_balance_gains = wb_gains  # Update state with computed gains
-    elif app_state.current_qe and app_state.illuminant is not None:
-        # Even with no filters selected, compute white balance with 100% transmission
-        wb_gains = compute_white_balance_gains(trans_interp, app_state.current_qe, app_state.illuminant)
-        app_state.white_balance_gains = wb_gains  # Update state with computed gains
+    # Compute and update white balance
+    wb_gains = _compute_white_balance(app_state, trans_interp)
     
-    # Create sensor response plot
-    fig_response = create_sensor_response_plot(
-        interp_grid=INTERP_GRID,
-        transmission=trans_interp,
-        qe_data=app_state.current_qe,
-        visible_channels=app_state.rgb_channels_visibility,
-        white_balance_gains=wb_gains,
-        apply_white_balance=app_state.apply_white_balance,
-        target_profile=app_state.target_profile,
-        channel_mixer=app_state.channel_mixer  # Pass channel mixer settings
-    )
+    # Render sensor response plot
+    _render_sensor_response_plot(app_state, trans_interp, wb_gains)
     
-    # Display sensor response with white balance toggle
-    new_apply_white_balance = sensor_response_display(fig_response, app_state.apply_white_balance)
-    # Don't manually set state - it's widget-controlled now
+    # Render reflector previews
+    _render_reflector_previews(app_state, trans_interp, reflector_collection)
     
-    # Reflector color previews
-    if (app_state.current_qe is not None and app_state.illuminant is not None and 
-        hasattr(reflector_collection, 'reflector_matrix')):
-        
-        if is_reflector_data_valid(reflector_collection):
-            reflector_matrix = reflector_collection.reflector_matrix
-            
-            if not check_reflector_wavelength_validity(reflector_matrix):
-                show_warning_message("Some reflector data appears incomplete. Check data files.")
-            
-            # Vegetation preview (2x2 grid) - only with hardcoded leaf files
-            if len(reflector_matrix) >= 4:
-                pixels = compute_reflector_preview_colors(
-                    reflector_matrix, trans_interp, app_state.current_qe, 
-                    app_state.illuminant, reflector_collection, app_state.channel_mixer
-                )
-                
-                if pixels is not None:
-                    reflector_preview(pixels)
-                else:
-                    show_warning_message(
-                        "⚠️ Vegetation Color Preview requires these exact reflector names:\n" +
-                        "• Leaf 1\n" +
-                        "• Leaf 2\n" +
-                        "• Leaf 3\n" +
-                        "• Leaf 4\n" +
-                        "Make sure the TSV files have a 'Name' column with these exact values."
-                    )
-            else:
-                show_warning_message(
-                    "⚠️ Vegetation Color Preview requires these exact reflector names:\n" +
-                    "• Leaf 1\n" +
-                    "• Leaf 2\n" +
-                    "• Leaf 3\n" +
-                    "• Leaf 4\n" +
-                    "Make sure the TSV files have a 'Name' column with these exact values."
-                )
-                
-            # Single reflector preview - get selected index from session state
-            selected_reflector_idx = st.session_state.get("selected_reflector_idx", None)
-            
-            # Handle both None and "None" string values, and ensure it's a valid integer index
-            if (selected_reflector_idx is not None and 
-                selected_reflector_idx != "None" and 
-                isinstance(selected_reflector_idx, int) and 
-                selected_reflector_idx < len(reflector_matrix)):
-                
-                single_color = compute_single_reflector_color(
-                    reflector_matrix, selected_reflector_idx, trans_interp, 
-                    app_state.current_qe, app_state.illuminant, app_state.channel_mixer
-                )
-                
-                if single_color is not None:
-                    # Get reflector name
-                    reflector_name = reflector_collection.reflectors[selected_reflector_idx].name
-                    
-                    # Use the same global normalization scale as vegetation preview if available
-                    if pixels is not None:
-                        global_max = np.max(pixels)
-                    else:
-                        # If no vegetation preview, compute global max from all available reflectors
-                        all_colors = []
-                        for i in range(min(len(reflector_matrix), 4)):  # Check up to 4 reflectors
-                            color = compute_single_reflector_color(
-                                reflector_matrix, i, trans_interp,
-                                app_state.current_qe, app_state.illuminant, app_state.channel_mixer
-                            )
-                            if color is not None:
-                                all_colors.append(color)
-                        global_max = np.max(all_colors) if all_colors else np.max(single_color)
-                    
-                    single_reflector_preview(single_color, reflector_name, global_max)
-                else:
-                    show_info_message("Unable to compute color for selected surface")
-    
-    # White balance display
+    # Display white balance information
     if app_state.current_qe and app_state.illuminant is not None:
         white_balance_display(app_state.white_balance_gains, app_state.selected_filters)
     else:
-        show_info_message("Select a QE & illuminant profile to compute white balance.")
+        show_info_message(UI_INFO_MESSAGES['qe_illuminant_required'])

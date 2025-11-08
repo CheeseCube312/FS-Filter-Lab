@@ -8,81 +8,37 @@ This module provides all visualization functionality including:
 - PNG report generation
 - Channel mixer visualization support
 """
+# Standard library imports
 import io
 import os
+from typing import List, Dict, Optional, Any, Callable, Tuple
+
+# Third-party imports
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Rectangle
-import streamlit as st
-from typing import List, Dict, Optional, Any, Callable, Tuple
+import plotly.graph_objects as go
 
+# Local imports
 from models.core import ChannelMixerSettings
-from services.channel_mixer import apply_channel_mixing_to_matrix
+from models.constants import (
+    CHART_HEIGHTS, CHART_LINE_STYLES, CHART_COLORS, PLOT_LAYOUT, 
+    SENSOR_RESPONSE_DEFAULTS, MPL_STYLE_CONFIG, REPORT_CONFIG,
+    ReportConfig, FilterData, ComputationFunctions, SensorData, ChartConfig
+)
 
 # =============================================================================
 # CONSTANTS
 # =============================================================================
 
-# Standard RGB color mappings
-COLOR_MAP = {
-    'R': 'red', 
-    'G': 'green', 
-    'B': 'blue'
-}
-
-# Plot styling constants
-PLOT_HEIGHT_DEFAULT = 400
-PLOT_HEIGHT_WITH_SPECTRUM = 450
-
-# Default matplotlib style configuration
-MPL_STYLE_CONFIG = {
-    "font.family": "DejaVu Sans",
-    "axes.facecolor": "white",
-    "axes.edgecolor": "#CCCCCC",
-    "axes.grid": True,
-    "grid.color": "#EEEEEE",
-    "grid.linestyle": "-",
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "xtick.color": "#444444",
-    "ytick.color": "#444444",
-    "text.color": "#333333",
-    "axes.labelcolor": "#333333",
-    "axes.titleweight": "bold",
-    "axes.titlesize": 14,
-    "axes.labelsize": 12,
-    "legend.frameon": False,
-    "legend.fontsize": 8,
-}
+# Standard RGB color mappings from constants
+COLOR_MAP = CHART_COLORS['rgb_colors']
 
 # =============================================================================
 # SHARED UTILITY FUNCTIONS
 # =============================================================================
-
-def apply_color_matrix(rgb_values, matrix):
-    """
-    Apply a 3x3 color transformation matrix to RGB values.
-    
-    Args:
-        rgb_values: RGB array of shape (..., 3)
-        matrix: 3x3 color transformation matrix
-        
-    Returns:
-        Transformed RGB values
-    """
-    # Reshape input to 2D array (n_pixels, 3)
-    original_shape = rgb_values.shape
-    pixels = rgb_values.reshape(-1, 3)
-    
-    # Apply matrix transformation
-    transformed = np.dot(pixels, matrix.T)
-    
-    # Reshape back to original dimensions
-    return transformed.reshape(original_shape)
-
 
 def _calculate_channel_responses(
     transmission: np.ndarray,
@@ -128,6 +84,29 @@ def _calculate_channel_responses(
         responses = apply_channel_mixing_to_responses(responses, channel_mixer)
     
     return responses
+
+
+def _create_line_style(color: str, style: str = 'default', dash: str = None) -> dict:
+    """
+    Create a standardized line style dictionary.
+    
+    Args:
+        color: Line color
+        style: Line style type ('default', 'thick', 'sparkline')
+        dash: Optional dash pattern ('dash', 'dot', etc.)
+        
+    Returns:
+        Dictionary with line styling parameters
+    """
+    line_dict = {
+        'color': color,
+        'width': CHART_LINE_STYLES[style].get('width', 2) if isinstance(CHART_LINE_STYLES[style], dict) else CHART_LINE_STYLES[style]
+    }
+    
+    if dash:
+        line_dict['dash'] = dash
+    
+    return line_dict
 
 
 def _calculate_spectral_colors(
@@ -244,26 +223,273 @@ def prepare_rgb_for_display(
 # MATPLOTLIB VISUALIZATION
 # =============================================================================
 
+def _create_filter_combo_info(selected_filters: List[str], df: Any, display_to_index: Dict[str, int]) -> Tuple[List, str]:
+    """
+    Create sorted filter combination information.
+    
+    Returns:
+        Tuple of (combo_list, combo_name_string)
+    """
+    combo = []
+    for name in sorted(selected_filters):
+        idx = display_to_index.get(name)
+        row = df.iloc[idx]
+        combo.append((row['Manufacturer'], row['Filter Number'], row))
+    combo_name = ", ".join(f"{m} {n}" for m, n, _ in combo)
+    return combo, combo_name
+
+
+def _add_filter_swatches_section(ax0, selected_filters: List[str], df: Any, display_to_index: Dict[str, int]):
+    """Add filter color swatches and labels to the report."""
+    ax0.axis('off')
+    y0 = 0.9
+    counts = {f: selected_filters.count(f) for f in set(selected_filters)}
+    
+    for filter_name, filter_count in counts.items():
+        filter_index = display_to_index[filter_name]
+        filter_row = df.iloc[filter_index]
+        filter_color = filter_row.get('Hex Color', '#000000')
+        
+        rect = Rectangle((0.0, y0-0.15), 0.03, 0.1, transform=ax0.transAxes,
+                         facecolor=filter_color, edgecolor='black', lw=REPORT_CONFIG['swatch_line_width'])
+        ax0.add_patch(rect)
+        
+        ax0.text(0.03, y0-0.1, f"{filter_row['Manufacturer']} – {filter_row['Filter Name']} (#{filter_row['Filter Number']}) ×{filter_count}",
+                 transform=ax0.transAxes, fontsize=REPORT_CONFIG['font_sizes']['filter_label'], va='center')
+        y0 -= 0.15
+
+
+def _add_light_loss_section(ax1, label: str, stops: float, avg_trans: float):
+    """Add light loss information section to the report."""
+    ax1.axis('off')
+    ax1.text(0.01, 0.7, 'Estimated Light Loss:', fontsize=REPORT_CONFIG['font_sizes']['section_header'], fontweight='bold')
+    ax1.text(0.01, 0.3, f"{label} → {stops:.2f} stops (Avg: {avg_trans*100:.1f}%)", fontsize=REPORT_CONFIG['font_sizes']['section_header'])
+
+
+def _add_transmission_plot_section(ax2, selected_indices: List[int], df: Any, filter_matrix: np.ndarray, 
+                                  masks: np.ndarray, add_curve_fn: Callable, interp_grid: np.ndarray, 
+                                  active_trans: np.ndarray):
+    """Add transmission plot section to the report."""
+    for filter_index in selected_indices:
+        filter_row = df.iloc[filter_index]
+        transmission_pct = np.clip(filter_matrix[filter_index], 1e-6, 1.0) * 100
+        filter_mask = masks[filter_index]
+        add_curve_fn(ax2, interp_grid, transmission_pct, filter_mask,
+                     filter_row['Filter Name'], filter_row.get('Hex Color', '#000000'))
+    
+    if len(selected_indices) > 1:
+        ax2.plot(interp_grid, active_trans * 100, color='black', lw=REPORT_CONFIG['combined_line_width'], label='Combined Filter')
+    
+    ax2.set_title('Filter Transmission (%)')
+    ax2.set_xlabel('Wavelength (nm)')
+    ax2.set_ylabel('Transmission (%)')
+    ax2.set_xlim(interp_grid.min(), interp_grid.max())
+    ax2.set_ylim(0, 100)
+
+
+def _add_white_balance_section(ax3, wb: Dict[str, float]):
+    """Add white balance gains section to the report."""
+    ax3.axis('off')
+    ax3.text(0.01, 0.6, 'White Balance Gains (Green = 1):', fontsize=REPORT_CONFIG['font_sizes']['section_header'], fontweight='bold')
+    
+    # Convert gains back to raw intensities (relative to green)
+    intensities = {
+        'R': 1.0 / wb['R'] if wb['R'] != 0 else 0.0,
+        'G': 1.0,
+        'B': 1.0 / wb['B'] if wb['B'] != 0 else 0.0
+    }
+    
+    ax3.text(0.01, 0.4, f"R: {intensities['R']:.3f}   G: {intensities['G']:.3f}   B: {intensities['B']:.3f}", fontsize=REPORT_CONFIG['font_sizes']['section_header'])
+
+
+def _add_sensor_response_section(ax4, current_qe: Dict[str, np.ndarray], wb: Dict[str, float], 
+                               active_trans: np.ndarray, interp_grid: np.ndarray, 
+                               camera_name: str, illuminant_name: str):
+    """Add sensor-weighted response section to the report."""
+    maxresp = 0
+    stack = {}
+    
+    # Plot in correct RGB order
+    for ch in ['R', 'G', 'B']:
+        qe = current_qe.get(ch)
+        if qe is None:
+            continue
+        gains = wb.get(ch, 1.0)
+        resp = np.nan_to_num(active_trans * (qe / 100)) * 100 / gains
+        ax4.plot(interp_grid, resp, label=f"{ch} Channel", lw=REPORT_CONFIG['channel_line_width'], color=COLOR_MAP[ch])
+        maxresp = max(maxresp, np.nanmax(resp))
+        stack[ch] = resp
+
+    # Spectrum strip
+    rgb_matrix = np.stack([
+        stack.get('R', np.zeros_like(active_trans)),
+        stack.get('G', np.zeros_like(active_trans)),
+        stack.get('B', np.zeros_like(active_trans))
+    ], axis=1)
+    mv = np.nanmax(rgb_matrix)
+    if mv > 0:
+        rgb_matrix /= mv
+    
+    extent = [interp_grid.min(), interp_grid.max(), maxresp * 1.02, maxresp * 1.07]
+    ax4.imshow(rgb_matrix[np.newaxis, :, :], aspect='auto', extent=extent)
+
+    ax4.set_title('Sensor-Weighted Response (White-Balanced)', fontsize=REPORT_CONFIG['font_sizes']['title'], fontweight='bold')
+    subtitle = f"Quantum Efficiency: {camera_name or 'None'}   |   Illuminant: {illuminant_name or 'None'}"
+    ax4.text(0.5, 0.98, subtitle, transform=ax4.transAxes, ha='center', va='bottom', fontsize=REPORT_CONFIG['font_sizes']['subtitle'])
+    ax4.set_xlabel('Wavelength (nm)')
+    ax4.set_ylabel('Response (%)')
+    ax4.set_xlim(interp_grid.min(), interp_grid.max())
+    ax4.set_ylim(0, extent[3] * 1.02)
+    ax4.legend(loc='upper right', fontsize=REPORT_CONFIG['font_sizes']['legend'], bbox_to_anchor=(1.0, 0.95))
+
+
+def _save_report_to_file(fig, buf: io.BytesIO, fname: str, camera_name: str, illuminant_name: str, sanitize_fn: Callable):
+    """Save the report figure to file and return data."""
+    # Save to buffer
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+
+    # Save to /outputs/[QE]/[Illuminant] folder
+    output_dir = os.path.join("output", sanitize_fn(camera_name), sanitize_fn(illuminant_name))
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, fname)
+    with open(output_path, "wb") as f:
+        f.write(buf.getvalue())
+
+    st.success(f"✔️ Report generated: {fname}")
+    return {'bytes': buf.getvalue(), 'name': fname}
+
+
 def setup_matplotlib_style():
-    """Set up matplotlib style for report generation."""
-    try:
-        plt.style.use("seaborn-v0_8-whitegrid")
-    except OSError:
-        plt.style.use("seaborn-whitegrid")
+    """
+    Configure matplotlib with consistent styling for report generation.
+    
+    Attempts to use modern seaborn styles with fallback options,
+    then applies custom configuration from constants.
+    """
+    # Try different seaborn style variants in order of preference
+    style_options = ["seaborn-v0_8-whitegrid", "seaborn-whitegrid", "whitegrid", "default"]
+    
+    for style in style_options:
+        try:
+            plt.style.use(style)
+            break
+        except OSError:
+            continue
+    
+    # Apply custom configuration
     plt.rcParams.update(MPL_STYLE_CONFIG)
 
 
 def add_filter_curve_to_matplotlib(ax, x, y, mask, label, color):
-    """Add a filter curve to a matplotlib axes."""
+    """
+    Add a filter transmission curve to a matplotlib axes.
+    
+    Args:
+        ax: Matplotlib axes object
+        x: Wavelength data
+        y: Transmission data
+        mask: Boolean mask for extrapolated regions
+        label: Curve label
+        color: Curve color
+    """
     # Plot main curve
-    ax.plot(x, y, color=color, linewidth=2, label=label)
+    ax.plot(x, y, color=color, linewidth=CHART_LINE_STYLES['standard_width'], label=label)
     
     # Add extrapolated regions if mask exists
     if mask is not None and np.any(mask):
         extrap_y = y.copy()
         extrap_y[~mask] = np.nan
-        ax.plot(x, extrap_y, color=color, linewidth=2, linestyle='--', alpha=0.7)
+        ax.plot(x, extrap_y, color=color, linewidth=CHART_LINE_STYLES['standard_width'], 
+                linestyle=CHART_LINE_STYLES['extrapolated_style'], alpha=CHART_LINE_STYLES['extrapolated_alpha'])
 
+
+def create_report_config(
+    selected_filters: List[str],
+    current_qe: Dict[str, np.ndarray], 
+    camera_name: str,
+    illuminant_name: str,
+    illuminant_curve: np.ndarray
+) -> ReportConfig:
+    """Helper function to create ReportConfig from individual parameters."""
+    return ReportConfig(
+        selected_filters=selected_filters,
+        current_qe=current_qe,
+        camera_name=camera_name,
+        illuminant_name=illuminant_name,
+        illuminant_curve=illuminant_curve
+    )
+
+def create_filter_data(
+    filter_matrix: np.ndarray,
+    df: Any,
+    display_to_index: Dict[str, int],
+    masks: np.ndarray,
+    interp_grid: np.ndarray
+) -> FilterData:
+    """Helper function to create FilterData from individual parameters.""" 
+    return FilterData(
+        filter_matrix=filter_matrix,
+        df=df,
+        display_to_index=display_to_index,
+        masks=masks,
+        interp_grid=interp_grid
+    )
+
+def create_computation_functions(
+    compute_selected_indices_fn: Callable[[List[str]], List[int]],
+    compute_filter_transmission_fn: Callable[[List[int]], Tuple[np.ndarray, str, np.ndarray]],
+    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray], Tuple[float, float]],
+    compute_white_balance_gains_fn: Callable[[np.ndarray, Dict[str, np.ndarray], np.ndarray], Dict[str, float]],
+    add_curve_fn: Callable,
+    sanitize_fn: Callable[[str], str]
+) -> ComputationFunctions:
+    """Helper function to create ComputationFunctions from individual parameters."""
+    return ComputationFunctions(
+        compute_selected_indices_fn=compute_selected_indices_fn,
+        compute_filter_transmission_fn=compute_filter_transmission_fn,
+        compute_effective_stops_fn=compute_effective_stops_fn,
+        compute_white_balance_gains_fn=compute_white_balance_gains_fn,
+        add_curve_fn=add_curve_fn,
+        sanitize_fn=sanitize_fn
+    )
+
+def create_sensor_data(sensor_qe: np.ndarray) -> SensorData:
+    """Helper function to create SensorData from individual parameters."""
+    return SensorData(sensor_qe=sensor_qe)
+
+def generate_report_png_v2(
+    report_config: ReportConfig,
+    filter_data: FilterData, 
+    computation_fns: ComputationFunctions,
+    sensor_data: SensorData
+) -> Dict[str, Any]:
+    """
+    Generate a PNG report with simplified parameter structure using data classes.
+    
+    This is the refactored version that reduces parameter count from 17 to 4
+    by using data classes to group related parameters.
+    """
+    return generate_report_png(
+        selected_filters=report_config.selected_filters,
+        current_qe=report_config.current_qe,
+        filter_matrix=filter_data.filter_matrix,
+        df=filter_data.df,
+        display_to_index=filter_data.display_to_index,
+        compute_selected_indices_fn=computation_fns.compute_selected_indices_fn,
+        compute_filter_transmission_fn=computation_fns.compute_filter_transmission_fn,
+        compute_effective_stops_fn=computation_fns.compute_effective_stops_fn,
+        compute_white_balance_gains_fn=computation_fns.compute_white_balance_gains_fn,
+        masks=filter_data.masks,
+        add_curve_fn=computation_fns.add_curve_fn,
+        interp_grid=filter_data.interp_grid,
+        sensor_qe=sensor_data.sensor_qe,
+        camera_name=report_config.camera_name,
+        illuminant_name=report_config.illuminant_name,
+        sanitize_fn=computation_fns.sanitize_fn,
+        illuminant_curve=report_config.illuminant_curve
+    )
 
 def generate_report_png(
     selected_filters: List[str],
@@ -287,175 +513,51 @@ def generate_report_png(
     """
     Generate a PNG report of the current filter configuration.
     
-    Args:
-        selected_filters: List of selected filter display names
-        current_qe: Dictionary of QE data by channel
-        filter_matrix: Matrix of filter transmissions
-        df: DataFrame with filter metadata
-        display_to_index: Mapping from display names to indices
-        compute_selected_indices_fn: Function to compute selected indices
-        compute_filter_transmission_fn: Function to compute filter transmission
-        compute_effective_stops_fn: Function to compute effective stops
-        compute_white_balance_gains_fn: Function to compute white balance gains
-        masks: Matrix of extrapolation masks
-        add_curve_fn: Function to add curves to matplotlib plot
-        interp_grid: Wavelength grid for x-axis
-        sensor_qe: Mean sensor QE values
-        camera_name: Name of selected camera
-        illuminant_name: Name of selected illuminant
-        sanitize_fn: Function to sanitize filenames
-        illuminant_curve: Illuminant curve
-        
-    Returns:
-        Dictionary with report bytes and filename
+    This function creates a comprehensive multi-panel report showing filter properties,
+    transmission curves, light loss calculations, and sensor responses.
     """
-    # Guard
+    # Validation
     if not selected_filters:
         st.warning("⚠️ No filters selected—nothing to export.")
         return {}
 
-    # Sort combo name
-    combo = []
-    for name in sorted(selected_filters):
-        idx = display_to_index.get(name)
-        row = df.iloc[idx]
-        combo.append((row['Manufacturer'], row['Filter Number'], row))
-    combo_name = ", ".join(f"{m} {n}" for m, n, _ in combo)
-
-    # Resolve indices
+    # Prepare filter combination data
+    combo, combo_name = _create_filter_combo_info(selected_filters, df, display_to_index)
+    
+    # Resolve and validate indices
     selected_indices = compute_selected_indices_fn(selected_filters)
     if not selected_indices:
         st.warning("⚠️ Invalid filter selection—cannot resolve indices.")
         return {}
 
-    # Compute curves
+    # Compute filter characteristics
     trans, label, combined = compute_filter_transmission_fn(selected_indices)
     active_trans = combined if combined is not None else trans
     avg_trans, stops = compute_effective_stops_fn(active_trans, sensor_qe)
     wb = compute_white_balance_gains_fn(active_trans, current_qe, illuminant_curve)
 
-    # Style & figure
+    # Create figure with layout
     setup_matplotlib_style()
-    fig = plt.figure(figsize=(8, 14), dpi=150, constrained_layout=False)
-    gs = GridSpec(5, 1, figure=fig, height_ratios=[1.2, 0.6, 3.2, 0.8, 3.2])
+    fig = plt.figure(figsize=REPORT_CONFIG['figure_size'], dpi=REPORT_CONFIG['dpi'], constrained_layout=False)
+    gs = GridSpec(5, 1, figure=fig, height_ratios=PLOT_LAYOUT['grid_height_ratios'])
 
-    # 1: Filter swatches
-    ax0 = fig.add_subplot(gs[0])
-    ax0.axis('off')
-    y0 = 0.9
-    counts = {f: selected_filters.count(f) for f in set(selected_filters)}
-    for name, cnt in counts.items():
-        idx = display_to_index[name]
-        row = df.iloc[idx]
-        hexc = row.get('Hex Color', '#000000')
-        rect = Rectangle((0.0, y0-0.15), 0.03, 0.1, transform=ax0.transAxes,
-                         facecolor=hexc, edgecolor='black', lw=0.5)
-        ax0.add_patch(rect)
-        ax0.text(0.03, y0-0.1, f"{row['Manufacturer']} – {row['Filter Name']} (#{row['Filter Number']}) ×{cnt}",
-                 transform=ax0.transAxes, fontsize=10, va='center')
-        y0 -= 0.15
+    # Build report sections
+    _add_filter_swatches_section(fig.add_subplot(gs[0]), selected_filters, df, display_to_index)
+    _add_light_loss_section(fig.add_subplot(gs[1]), label, stops, avg_trans)
+    _add_transmission_plot_section(fig.add_subplot(gs[2]), selected_indices, df, filter_matrix, 
+                                  masks, add_curve_fn, interp_grid, active_trans)
+    _add_white_balance_section(fig.add_subplot(gs[3]), wb)
+    _add_sensor_response_section(fig.add_subplot(gs[4]), current_qe, wb, active_trans, 
+                               interp_grid, camera_name, illuminant_name)
 
-    # 2: Light loss
-    ax1 = fig.add_subplot(gs[1])
-    ax1.axis('off')
-    ax1.text(0.01, 0.7, 'Estimated Light Loss:', fontsize=12, fontweight='bold')
-    ax1.text(0.01, 0.3, f"{label} → {stops:.2f} stops (Avg: {avg_trans*100:.1f}%)", fontsize=12)
-
-    # 3: Transmission plot
-    ax2 = fig.add_subplot(gs[2])
-    for idx in selected_indices:
-        row = df.iloc[idx]
-        y = np.clip(filter_matrix[idx], 1e-6, 1.0) * 100
-        mask = masks[idx]
-        add_curve_fn(ax2, interp_grid, y, mask,
-                     f"{row['Filter Name']} ({row['Filter Number']})", row.get('Hex Color', '#000000'))
-    if len(selected_indices) > 1:
-        ax2.plot(interp_grid, active_trans * 100, color='black', lw=2.5, label='Combined Filter')
-    ax2.set_title('Filter Transmission (%)')
-    ax2.set_xlabel('Wavelength (nm)')
-    ax2.set_ylabel('Transmission (%)')
-    ax2.set_xlim(interp_grid.min(), interp_grid.max())
-    ax2.set_ylim(0, 100)
-
-    # 4: WB multipliers (convert gains to intensities)
-    ax3 = fig.add_subplot(gs[3])
-    ax3.axis('off')
-    ax3.text(0.01, 0.6, 'White Balance Gains (Green = 1):', fontsize=12, fontweight='bold')
-
-    # Convert gains back to raw intensities (relative to green)
-    intensities = {
-        'R': 1.0 / wb['R'] if wb['R'] != 0 else 0.0,
-        'G': 1.0,
-        'B': 1.0 / wb['B'] if wb['B'] != 0 else 0.0
-    }
-
-    ax3.text(0.01, 0.4, f"R: {intensities['R']:.3f}   G: {intensities['G']:.3f}   B: {intensities['B']:.3f}", fontsize=12)
-
-    # 5: Sensor-weighted response
-    ax4 = fig.add_subplot(gs[4])
-    maxresp = 0
-    stack = {}
-    # Plot in correct RGB order
-    for ch in ['R', 'G', 'B']:
-        qe = current_qe.get(ch)
-        if qe is None:
-            continue
-        gains = wb.get(ch, 1.0)
-        resp = np.nan_to_num(active_trans * (qe / 100)) * 100 / gains
-        ax4.plot(
-            interp_grid,
-            resp,
-            label=f"{ch} Channel",
-            lw=2,
-            color=COLOR_MAP[ch]
-        )
-        maxresp = max(maxresp, np.nanmax(resp))
-        stack[ch] = resp
-
-    # Spectrum strip
-    rgb_matrix = np.stack([
-        stack.get('R', np.zeros_like(active_trans)),
-        stack.get('G', np.zeros_like(active_trans)),
-        stack.get('B', np.zeros_like(active_trans))
-    ], axis=1)
-    mv = np.nanmax(rgb_matrix)
-    if mv > 0:
-        rgb_matrix /= mv
-    extent = [interp_grid.min(), interp_grid.max(), maxresp * 1.02, maxresp * 1.07]
-    ax4.imshow(rgb_matrix[np.newaxis, :, :], aspect='auto', extent=extent)
-
-    ax4.set_title('Sensor-Weighted Response (White-Balanced)', fontsize=14, fontweight='bold')
-    subtitle = f"Quantum Efficiency: {camera_name or 'None'}   |   Illuminant: {illuminant_name or 'None'}"
-    ax4.text(0.5, 0.98, subtitle, transform=ax4.transAxes, ha='center', va='bottom', fontsize=8)
-    ax4.set_xlabel('Wavelength (nm)')
-    ax4.set_ylabel('Response (%)')
-    ax4.set_xlim(interp_grid.min(), interp_grid.max())
-    ax4.set_ylim(0, extent[3] * 1.02)
-    ax4.legend(loc='upper right', fontsize=8, bbox_to_anchor=(1.0, 0.95))
-
-    # Finalize
-    fig.suptitle(f"Filter Report", fontsize=16, fontweight='bold')
+    # Finalize layout
+    fig.suptitle("Filter Report", fontsize=REPORT_CONFIG['font_sizes']['main_title'], fontweight='bold')
     fig.tight_layout(rect=[0, 0.03, 1, 1])
 
-    # Save to buffer
+    # Save and return
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    plt.close(fig)
-
-    # Filename
     fname = sanitize_fn(f"{camera_name}_{illuminant_name}_{combo_name}") + '.png'
-
-    # Save to /outputs/[QE]/[Illuminant] folder
-    output_dir = os.path.join("output", sanitize_fn(camera_name), sanitize_fn(illuminant_name))
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, fname)
-    with open(output_path, "wb") as f:
-        f.write(buf.getvalue())
-
-    # Return the report data
-    st.success(f"✔️ Report generated: {fname}")
-    return {'bytes': buf.getvalue(), 'name': fname}
+    return _save_report_to_file(fig, buf, fname, camera_name, illuminant_name, sanitize_fn)
 
 
 # =============================================================================
@@ -469,14 +571,41 @@ def apply_plotly_default_style(fig, title, x_title="Wavelength (nm)", y_title="R
         xaxis_title=x_title,
         yaxis_title=y_title,
         template="plotly_white",
-        height=height or PLOT_HEIGHT_DEFAULT,
+        height=height or CHART_HEIGHTS['standard_plot'],
         hovermode='x unified'
     )
     return fig
 
+def apply_chart_config_style(fig, config: ChartConfig):
+    """Apply styling to Plotly figures using ChartConfig data class."""
+    fig.update_layout(
+        title=config.title,
+        xaxis_title=config.x_title,
+        yaxis_title=config.y_title,
+        template=config.template,
+        height=config.height or CHART_HEIGHTS['standard_plot'],
+        hovermode=config.hovermode,
+        showlegend=config.show_legend
+    )
+    
+    if config.log_scale:
+        fig.update_yaxes(type="log")
+    
+    return fig
+
 
 def add_filter_curve_to_plotly(fig, x, y, mask, label, color):
-    """Add a filter curve to an existing plotly figure."""
+    """
+    Add a filter transmission curve to a Plotly figure.
+    
+    Args:
+        fig: Plotly figure object
+        x: Wavelength data
+        y: Transmission data
+        mask: Boolean mask for extrapolated regions
+        label: Curve label
+        color: Curve color
+    """
     # Convert log scale if needed
     y_display = y.copy()
     
@@ -486,7 +615,7 @@ def add_filter_curve_to_plotly(fig, x, y, mask, label, color):
         y=y_display,
         mode='lines',
         name=label,
-        line=dict(color=color, width=2),
+        line=_create_line_style(color),
         showlegend=True
     ))
     
@@ -500,7 +629,7 @@ def add_filter_curve_to_plotly(fig, x, y, mask, label, color):
             y=extrap_y,
             mode='lines',
             name=f'{label} (extrapolated)',
-            line=dict(color=color, width=2, dash='dot'),
+            line=_create_line_style(color, dash='dot'),
             showlegend=False
         ))
 
@@ -577,7 +706,7 @@ def _update_response_plot_layout(
     title = f"Sensor Response{wb_status}{mixer_status}"
     
     # Determine plot height based on contents
-    plot_height = PLOT_HEIGHT_WITH_SPECTRUM if has_spectrum_strip else PLOT_HEIGHT_DEFAULT
+    plot_height = CHART_HEIGHTS['plot_with_spectrum'] if has_spectrum_strip else CHART_HEIGHTS['standard_plot']
     
     # Apply consistent styling
     apply_plotly_default_style(fig, title, height=plot_height)
@@ -598,11 +727,11 @@ def create_filter_response_plot(
     fig = go.Figure()
     
     # Add individual filter curves
-    for i, idx in enumerate(selected_indices):
-        transmission = filter_matrix[idx]
-        mask = masks[idx] if masks is not None else np.zeros_like(transmission, dtype=bool)
-        name = filter_names[idx]
-        color = filter_hex_colors[idx]
+    for curve_index, filter_index in enumerate(selected_indices):
+        transmission = filter_matrix[filter_index]
+        mask = masks[filter_index] if masks is not None else np.zeros_like(transmission, dtype=bool)
+        name = filter_names[filter_index]
+        color = filter_hex_colors[filter_index]
         
         # Convert to log scale if needed
         y_data = -np.log2(np.maximum(transmission, 1e-6)) if log_stops else transmission
@@ -617,7 +746,7 @@ def create_filter_response_plot(
             y=y_data,
             mode='lines',
             name='Combined',
-            line=dict(color='black', width=3),
+            line=_create_line_style(CHART_COLORS['text'], 'thick'),
             showlegend=True
         ))
     
@@ -634,7 +763,7 @@ def create_filter_response_plot(
             y=target_values[valid_mask],
             mode='lines',
             name='Target',
-            line=dict(color='red', width=2, dash='dash'),
+            line=_create_line_style(CHART_COLORS['warning'], dash='dash'),
             showlegend=True
         ))
     
@@ -656,13 +785,8 @@ def create_sensor_response_plot(
     visible_channels: Dict[str, bool],
     white_balance_gains: Dict[str, float],
     apply_white_balance: bool,
-    target_profile: Optional[Any],
-    channel_mixer: Optional[ChannelMixerSettings] = None,
-    # Added parameters for configurability
-    spectrum_strip_height_pct: float = 0.05,
-    spectrum_strip_position_pct: float = 1.02,
-    saturation_scaling_factor: float = 5.0,
-    min_saturation: float = 0.15
+    target_profile: Optional[Any] = None,
+    channel_mixer: Optional[ChannelMixerSettings] = None
 ) -> go.Figure:
     """Create a plotly figure showing sensor response with optional channel mixing."""
     fig = go.Figure()
@@ -680,7 +804,7 @@ def create_sensor_response_plot(
             y=response,
             mode='lines',
             name=f'{channel} Channel',
-            line=dict(color=COLOR_MAP.get(channel, 'gray'), width=2),
+            line=_create_line_style(COLOR_MAP.get(channel, 'gray')),
             showlegend=True
         ))
     
@@ -695,8 +819,8 @@ def create_sensor_response_plot(
         rgb_matrix = _calculate_spectral_colors(
             interp_grid, 
             r_channel, g_channel, b_channel,
-            saturation_scaling_factor=saturation_scaling_factor, 
-            min_saturation=min_saturation
+            saturation_scaling_factor=SENSOR_RESPONSE_DEFAULTS['saturation_scaling_factor'], 
+            min_saturation=SENSOR_RESPONSE_DEFAULTS['min_saturation']
         )
         
         # Calculate brightness for hover information
@@ -714,7 +838,7 @@ def create_sensor_response_plot(
                     max_response = response_max
         
         # Calculate spectrum strip position
-        spectrum_y_pos = max_response * spectrum_strip_position_pct
+        spectrum_y_pos = max_response * SENSOR_RESPONSE_DEFAULTS['spectrum_strip_position_pct']
         
         # Add spectrum strip to plot
         _add_spectrum_strip_to_plot(
@@ -732,7 +856,7 @@ def create_sensor_response_plot(
             y=target_profile.values,
             mode='lines',
             name=f'Target: {target_profile.name}',
-            line=dict(color='black', width=2, dash='dash'),
+            line=_create_line_style(CHART_COLORS['text'], dash='dash'),
             showlegend=True
         ))
     
@@ -747,26 +871,68 @@ def create_sensor_response_plot(
     return fig
 
 
+def _create_standard_plotly_figure(
+    x_data: np.ndarray,
+    y_data_dict: Dict[str, np.ndarray],
+    title: str,
+    y_title: str,
+    color_map: Dict[str, str],
+    visible_channels: Dict[str, bool] = None,
+    height: int = None
+) -> go.Figure:
+    """
+    Create a standard Plotly figure with multiple data series.
+    
+    Args:
+        x_data: X-axis data (usually wavelength)
+        y_data_dict: Dictionary of data series {name: y_values}
+        title: Chart title
+        y_title: Y-axis title
+        color_map: Dictionary mapping series names to colors
+        visible_channels: Optional visibility filter for channels
+        height: Optional chart height
+        
+    Returns:
+        Configured Plotly figure
+    """
+    fig = go.Figure()
+    
+    for name, y_data in y_data_dict.items():
+        # Skip if visibility filter exists and channel is hidden
+        if visible_channels and not visible_channels.get(name, True):
+            continue
+            
+        fig.add_trace(go.Scatter(
+            x=x_data,
+            y=y_data,
+            mode='lines',
+            name=name,
+            line=_create_line_style(color_map.get(name, 'gray'))
+        ))
+    
+    apply_plotly_default_style(fig, title, y_title=y_title, height=height or CHART_HEIGHTS['default'])
+    return fig
+
+
 def create_qe_figure(
     interp_grid: np.ndarray,
     qe_data: Dict[str, np.ndarray],
     visible_channels: Dict[str, bool],
-    height: int = 300
+    height: int = None
 ) -> go.Figure:
     """Create a QE response figure."""
-    fig = go.Figure()
+    # Add channel suffix for display names
+    display_data = {f'{channel} QE': curve for channel, curve in qe_data.items()}
     
-    for channel, curve in qe_data.items():
-        if visible_channels.get(channel, True):
-            fig.add_trace(go.Scatter(
-                x=interp_grid,
-                y=curve,
-                mode='lines',
-                name=f'{channel} QE',
-                line=dict(color=COLOR_MAP.get(channel, 'gray'), width=2)
-            ))
-    
-    apply_plotly_default_style(fig, "Quantum Efficiency", y_title="QE", height=height)
+    return _create_standard_plotly_figure(
+        x_data=interp_grid,
+        y_data_dict=display_data,
+        title="Quantum Efficiency",
+        y_title="QE",
+        color_map=COLOR_MAP,
+        visible_channels={f'{k} QE': v for k, v in visible_channels.items()},
+        height=height
+    )
     
     return fig
 
@@ -775,32 +941,95 @@ def create_illuminant_figure(
     interp_grid: np.ndarray,
     illuminant: np.ndarray,
     illuminant_name: str,
-    height: int = 300
+    height: int = None
 ) -> go.Figure:
     """Create an illuminant figure."""
+    return _create_standard_plotly_figure(
+        x_data=interp_grid,
+        y_data_dict={illuminant_name: illuminant},
+        title="Illuminant Spectrum",
+        y_title="Relative Power",
+        color_map={illuminant_name: CHART_COLORS['illuminant']},
+        height=height
+    )
+
+
+def create_leaf_reflectance_figure(
+    interp_grid: np.ndarray,
+    reflector_matrix: np.ndarray,
+    reflector_collection: Any,
+    height: int = None
+) -> Optional[go.Figure]:
+    """Create a figure showing the four leaf reflectance spectra."""
+    from models.constants import VEGETATION_PREVIEW_FILES
+    from services.calculations import find_vegetation_preview_reflectors
+    
+    if not reflector_collection or not hasattr(reflector_collection, 'reflectors'):
+        return None
+        
+    leaf_indices = find_vegetation_preview_reflectors(reflector_collection)
+    if leaf_indices is None:
+        return None
+    
     fig = go.Figure()
     
-    fig.add_trace(go.Scatter(
-        x=interp_grid,
-        y=illuminant,
-        mode='lines',
-        name=illuminant_name,
-        line=dict(color='orange', width=2)
-    ))
+    # Define colors for the four leaf spectra
+    leaf_colors = CHART_COLORS['leaf_colors']
     
-    apply_plotly_default_style(fig, "Illuminant Spectrum", y_title="Relative Power", height=height)
+    for i, leaf_idx in enumerate(leaf_indices):
+        reflector_data = reflector_matrix[leaf_idx]
+        leaf_name = VEGETATION_PREVIEW_FILES[i]
+        
+        fig.add_trace(go.Scatter(
+            x=interp_grid,
+            y=reflector_data,
+            mode='lines',
+            name=leaf_name,
+            line=_create_line_style(leaf_colors[i])
+        ))
+    
+    apply_plotly_default_style(fig, "Leaf Reflectance Spectra", y_title="Reflectance", 
+                              height=height or CHART_HEIGHTS['default'])
     
     return fig
+
+
+def create_single_reflectance_figure(
+    interp_grid: np.ndarray,
+    reflector_matrix: np.ndarray,
+    reflector_collection: Any,
+    selected_reflector_idx: int,
+    height: int = None
+) -> Optional[go.Figure]:
+    """Create a figure showing a single selected reflectance spectrum."""
+    if (not reflector_collection or 
+        not hasattr(reflector_collection, 'reflectors') or
+        selected_reflector_idx >= len(reflector_matrix)):
+        return None
+    
+    reflector_data = reflector_matrix[selected_reflector_idx]
+    reflector_name = reflector_collection.reflectors[selected_reflector_idx].name
+    
+    return _create_standard_plotly_figure(
+        x_data=interp_grid,
+        y_data_dict={reflector_name: reflector_data},
+        title=f"Reflectance: {reflector_name}",
+        y_title="Reflectance",
+        color_map={reflector_name: CHART_COLORS['single_reflector']},
+        height=height
+    )
 
 
 def create_sparkline_plot(
     x_data: np.ndarray,
     y_data: np.ndarray,
     color: str = "blue",
-    height: int = 150,  # Increased height for better visibility
+    height: int = None,
     width: int = 300
 ) -> go.Figure:
-    """Create a small sparkline plot with grid and axes."""
+    """Create a simple sparkline plot for inline display."""
+    if height is None:
+        height = CHART_HEIGHTS['sparkline']
     fig = go.Figure()
     
     # Convert transmission values to percentage for display
@@ -810,7 +1039,7 @@ def create_sparkline_plot(
         x=x_data,
         y=y_data_pct,
         mode='lines',
-        line=dict(color=color, width=2),
+        line=_create_line_style(color, 'sparkline'),
         showlegend=False
     ))
     
@@ -839,7 +1068,7 @@ def create_sparkline_plot(
         showlegend=False,
         xaxis=dict(
             showgrid=True,
-            gridcolor='rgba(200,200,200,0.4)',
+            gridcolor=CHART_COLORS['grid'],
             showticklabels=True,
             tickvals=x_ticks,
             title=dict(
@@ -850,7 +1079,7 @@ def create_sparkline_plot(
         ),
         yaxis=dict(
             showgrid=True,
-            gridcolor='rgba(200,200,200,0.4)',
+            gridcolor=CHART_COLORS['grid'],
             showticklabels=True,
             title=dict(
                 text="Transmission (%)",
@@ -859,8 +1088,8 @@ def create_sparkline_plot(
             tickfont=dict(size=8),
             range=[0, 100]  # Set y-axis range to 0-100%
         ),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)"
+        paper_bgcolor=CHART_COLORS['transparent'],
+        plot_bgcolor=CHART_COLORS['transparent']
     )
     
     return fig

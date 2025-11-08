@@ -8,14 +8,18 @@ This module provides all UI-related functionality including:
 - Data display formatting
 - Safe operation execution
 """
-import streamlit as st
-import numpy as np
+# Standard library imports
 import colorsys
-import re
-import pandas as pd
 import logging
+import re
 from typing import Dict, Any, Optional, List, Tuple, Union, TypeVar, Callable
 
+# Third-party imports
+import streamlit as st
+import numpy as np
+import pandas as pd
+
+# Local imports
 from models.constants import DEFAULT_WB_GAINS
 from models.core import TargetProfile
 
