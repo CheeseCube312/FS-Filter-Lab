@@ -440,7 +440,7 @@ def create_filter_data(
 def create_computation_functions(
     compute_selected_indices_fn: Callable[[List[str]], List[int]],
     compute_filter_transmission_fn: Callable[[List[int]], Tuple[np.ndarray, str, np.ndarray]],
-    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray], Tuple[float, float]],
+    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray, Optional[np.ndarray]], Tuple[float, float]],
     compute_white_balance_gains_fn: Callable[[np.ndarray, Dict[str, np.ndarray], np.ndarray], Dict[str, float]],
     add_curve_fn: Callable,
     sanitize_fn: Callable[[str], str]
@@ -499,7 +499,7 @@ def generate_report_png(
     display_to_index: Dict[str, int],
     compute_selected_indices_fn: Callable[[List[str]], List[int]],
     compute_filter_transmission_fn: Callable[[List[int]], Tuple[np.ndarray, str, np.ndarray]],
-    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray], Tuple[float, float]],
+    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray, Optional[np.ndarray]], Tuple[float, float]],
     compute_white_balance_gains_fn: Callable[[np.ndarray, Dict[str, np.ndarray], np.ndarray], Dict[str, float]],
     masks: np.ndarray,
     add_curve_fn: Callable,
@@ -533,7 +533,7 @@ def generate_report_png(
     # Compute filter characteristics
     trans, label, combined = compute_filter_transmission_fn(selected_indices)
     active_trans = combined if combined is not None else trans
-    avg_trans, stops = compute_effective_stops_fn(active_trans, sensor_qe)
+    avg_trans, stops = compute_effective_stops_fn(active_trans, sensor_qe, illuminant_curve)
     wb = compute_white_balance_gains_fn(active_trans, current_qe, illuminant_curve)
 
     # Create figure with layout

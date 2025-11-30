@@ -309,7 +309,7 @@ class ComputationFunctions:
     """Container for computation functions used in report generation."""
     compute_selected_indices_fn: Callable[[List[str]], List[int]]
     compute_filter_transmission_fn: Callable[[List[int]], Tuple[np.ndarray, str, np.ndarray]]
-    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray], Tuple[float, float]]
+    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray, Optional[np.ndarray]], Tuple[float, float]]
     compute_white_balance_gains_fn: Callable[[np.ndarray, Dict[str, np.ndarray], np.ndarray], Dict[str, float]]
     add_curve_fn: Callable
     sanitize_fn: Callable[[str], str]

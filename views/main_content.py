@@ -88,7 +88,8 @@ def render_chart_with_controls(
 def transmission_metrics(
     trans: np.ndarray, 
     label: str, 
-    sensor_qe: np.ndarray
+    sensor_qe: Optional[np.ndarray],
+    illuminant: Optional[np.ndarray] = None
 ) -> None:
     """Display transmission metrics (light loss)."""
     from services.calculations import format_transmission_metrics
@@ -101,8 +102,14 @@ def transmission_metrics(
         show_warning_message(f"Cannot compute average transmission for {label}: insufficient data.")
         return
     
-    # Calculate effective stops
-    avg_trans, effective_stops = compute_effective_stops(trans, sensor_qe)
+    # Check if we have sensor QE data
+    if sensor_qe is None:
+        from views.ui_utils import show_warning_message
+        show_warning_message(f"Cannot compute light loss for {label}: no sensor QE data.")
+        return
+    
+    # Calculate effective stops with illuminant weighting
+    avg_trans, effective_stops = compute_effective_stops(trans, sensor_qe, illuminant)
     
     # Format metrics
     metrics = format_transmission_metrics(trans, label, avg_trans, effective_stops)
@@ -353,7 +360,7 @@ def _render_filter_analysis(app_state, filter_collection, selected_indices):
     # Update combined transmission in state
     app_state.combined_transmission = combined if combined is not None else trans
     
-    # Calculate sensor QE
+    # Calculate sensor QE for display (RGB response)
     if app_state.current_qe:
         responses, rgb_matrix, _ = compute_rgb_response(
             trans, 
@@ -362,13 +369,10 @@ def _render_filter_analysis(app_state, filter_collection, selected_indices):
             app_state.rgb_channels_visibility,
             app_state.channel_mixer  # Pass channel mixer settings
         )
-        # Use Green channel for effective stops calculation (most representative)
-        sensor_qe = responses.get('G', None) if responses else None
-    else:
-        sensor_qe = None
     
-    # Display transmission metrics
-    transmission_metrics(trans, label, sensor_qe)
+    # Display transmission metrics using raw QE data and illuminant
+    raw_qe = app_state.current_qe.get('G') if app_state.current_qe else None
+    transmission_metrics(trans, label, raw_qe, app_state.illuminant)
     
     # Create and display filter response plot
     filter_names = [filter.name for filter in filter_collection.filters]

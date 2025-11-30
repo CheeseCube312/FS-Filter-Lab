@@ -156,14 +156,16 @@ def is_valid_transmission(transmission: np.ndarray) -> bool:
 
 def compute_effective_stops(
     transmission: np.ndarray, 
-    sensor_qe: np.ndarray
+    sensor_qe: np.ndarray,
+    illuminant: Optional[np.ndarray] = None
 ) -> Tuple[float, float]:
     """
-    Compute effective stops from transmission and sensor QE.
+    Compute effective stops from transmission, sensor QE, and illuminant.
     
     Args:
-        transmission: Transmission values
-        sensor_qe: Sensor quantum efficiency values
+        transmission: Transmission values (0-1)
+        sensor_qe: Sensor quantum efficiency values (%)
+        illuminant: Illuminant spectrum (optional, defaults to uniform)
     
     Returns:
         Tuple of (avg_transmission, effective_stops)
@@ -172,8 +174,14 @@ def compute_effective_stops(
     transmission = np.asarray(transmission)
     sensor_qe = np.asarray(sensor_qe)
     
-    # Find valid indices where neither is NaN
-    valid = ~np.isnan(transmission) & ~np.isnan(sensor_qe)
+    # Default to uniform illuminant if not provided
+    if illuminant is None:
+        illuminant = np.ones_like(transmission)
+    else:
+        illuminant = np.asarray(illuminant)
+    
+    # Find valid indices where none are NaN
+    valid = (~np.isnan(transmission) & ~np.isnan(sensor_qe) & ~np.isnan(illuminant))
     
     # If no valid data, return NaNs immediately
     if not np.any(valid):
@@ -181,17 +189,21 @@ def compute_effective_stops(
     
     clipped_trans = np.clip(transmission[valid], EPSILON, 1.0)
     clipped_qe = sensor_qe[valid]
+    clipped_illuminant = illuminant[valid]
+    
+    # Weight by actual photon flux (illuminant * QE)
+    photometric_weights = clipped_illuminant * clipped_qe
     
     # If all weights are zero, cannot compute weighted average
-    if np.all(clipped_qe == 0):
+    if np.all(photometric_weights == 0):
         return np.nan, np.nan
     
-    # Defensive: Check if clipped_trans or clipped_qe are empty before averaging
-    if clipped_trans.size == 0 or clipped_qe.size == 0:
+    # Defensive: Check if arrays are empty before averaging
+    if clipped_trans.size == 0 or photometric_weights.size == 0:
         return np.nan, np.nan
     
-    # Weighted average transmission
-    avg_trans = np.average(clipped_trans, weights=clipped_qe)
+    # Weighted average transmission by photon flux
+    avg_trans = np.average(clipped_trans, weights=photometric_weights)
     
     # Prevent log2 of zero or negative (should be prevented by clipping but be safe)
     if avg_trans <= 0:

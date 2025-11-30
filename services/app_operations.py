@@ -230,15 +230,15 @@ def generate_application_report(
             app_state.white_balance_gains,
             app_state.rgb_channels_visibility
         )
-        # Use Green channel for effective stops calculation (most representative)
-        sensor_qe = responses.get('G', None) if responses else None
+        # Use raw Green channel QE for effective stops calculation
+        sensor_qe = app_state.current_qe.get('G', None) if app_state.current_qe else None
     
     # Get illuminant
     illuminant = (app_state.illuminant if app_state.illuminant is not None 
                  else np.ones_like(INTERP_GRID))
     
     # Compute effective stops
-    effective_stops_fn = lambda t, qe: compute_effective_stops(t, qe) if qe is not None else (0.0, 0.0)
+    effective_stops_fn = lambda t, qe: compute_effective_stops(t, qe, illuminant) if qe is not None else (0.0, 0.0)
     
     # Compute white balance
     white_balance_fn = lambda t, qe, illum: (
