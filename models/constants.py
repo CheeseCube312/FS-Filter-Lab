@@ -112,15 +112,27 @@ UI_BUTTONS = {
     'close_importers': "✖️ Close Importers",
     'rebuild_cache': "🔄 Rebuild Cache",
     'csv_importers': "📊 WebPlotDigitizer .csv importers",
+<<<<<<< Updated upstream
     'generate_report': "📄 Generate Report (PNG)",
     'download_report': "⬇️ Download Last Report"
+=======
+    'generate_full_report': "📊 Generate Full Report",
+
+>>>>>>> Stashed changes
 }
 
 # Main section and panel titles
 UI_SECTIONS = {
     'filter_plotter': "Filter Plotter",
+<<<<<<< Updated upstream
     'extras': "Extras",
     'settings': "Settings",
+=======
+    'analysis_setup': "Analysis Setup",
+    'display_visualization': "Display & Visualization",
+    'export_reports': "Export & Reports",
+    'data_management': "Data Management",
+>>>>>>> Stashed changes
     'vegetation_preview': "Vegetation Color Preview",
     'surface_preview': "Surface Preview",
     'show_advanced_search': "Show Advanced Search",
@@ -258,6 +270,11 @@ REPORT_CONFIG = {
         'title': 16,                       # Main title
         'subtitle': 8,                     # Subtitles and legends
         'axis_title': 14,                  # Chart axis titles
+<<<<<<< Updated upstream
+=======
+        'main_title': 18,                  # Report main title
+        'legend': 8,                       # Legend font size
+>>>>>>> Stashed changes
     }
 }
 

@@ -12,7 +12,8 @@ Data Initialization:
 
 Report Generation:
 - generate_application_report(): Creates comprehensive PNG analysis reports
-- setup_report_download(): Configures Streamlit download interface
+- generate_full_report(): Creates both PNG and TSV reports with matching filenames
+- generate_tsv_for_download(): Creates TSV export files for filter stacks
 
 System Operations:
 - rebuild_application_cache(): Clears and rebuilds data caches
@@ -38,11 +39,26 @@ from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 
 # Third-party imports
 import numpy as np
+<<<<<<< Updated upstream
+=======
+import pandas as pd
+>>>>>>> Stashed changes
 import streamlit as st
 
 # Local imports
 from models.core import FilterCollection, ReflectorCollection
+<<<<<<< Updated upstream
 from models.constants import INTERP_GRID, CACHE_DIR, UI_BUTTONS
+=======
+from models.constants import INTERP_GRID, CACHE_DIR
+from services.data import (
+    load_filter_collection,
+    load_quantum_efficiencies, 
+    load_illuminant_collection,
+    load_reflector_collection
+)
+from views.ui_utils import try_operation, handle_error
+>>>>>>> Stashed changes
 from services.calculations import (
     compute_filter_transmission,
     compute_selected_filter_indices,
@@ -51,7 +67,11 @@ from services.calculations import (
     compute_white_balance_gains
 )
 from services.visualization import (
+<<<<<<< Updated upstream
     generate_report_png, add_filter_curve_to_matplotlib, generate_report_png_v2,
+=======
+    add_filter_curve_to_matplotlib, generate_report_png_v2,
+>>>>>>> Stashed changes
     create_report_config, create_filter_data, create_computation_functions, create_sensor_data
 )
 
@@ -121,16 +141,6 @@ def initialize_application_data():
         Uses caching to improve performance on subsequent loads.
         Cache is automatically invalidated when source files change.
     """
-    from services.data import (
-        load_filter_collection,
-        load_quantum_efficiencies, 
-        load_illuminant_collection,
-        load_reflector_collection
-    )
-    from views.ui_utils import try_operation, handle_error
-    from models.core import FilterCollection, ReflectorCollection
-    import numpy as np
-    
     # Load filter collection
     filter_collection = try_operation(
         load_filter_collection,
@@ -238,7 +248,11 @@ def generate_application_report(
                  else np.ones_like(INTERP_GRID))
     
     # Compute effective stops
+<<<<<<< Updated upstream
     effective_stops_fn = lambda t, qe: compute_effective_stops(t, qe, illuminant) if qe is not None else (0.0, 0.0)
+=======
+    effective_stops_fn = lambda t, qe, illum: compute_effective_stops(t, qe, illum) if qe is not None else (0.0, 0.0)
+>>>>>>> Stashed changes
     
     # Compute white balance
     white_balance_fn = lambda t, qe, illum: (
@@ -314,13 +328,21 @@ def rebuild_application_cache(cache_dir: Path) -> bool:
     return success
 
 
-def setup_report_download(app_state: "StateManager") -> None:
+def _create_tsv_data(
+    app_state: "StateManager",
+    filter_collection: FilterCollection
+) -> Optional[str]:
     """
-    Setup download button for the last generated report.
+    Create TSV data for filter stack export.
     
     Args:
         app_state: Current application state
+        filter_collection: Available filters
+        
+    Returns:
+        TSV content string or None if export fails
     """
+<<<<<<< Updated upstream
     last_export = app_state.last_export
     if last_export and last_export.get("bytes"):
         st.download_button(
@@ -329,3 +351,174 @@ def setup_report_download(app_state: "StateManager") -> None:
             file_name=last_export["name"],
             mime="image/png"
         )
+=======
+    # Get selected filter indices
+    selected_indices = compute_selected_filter_indices(
+        app_state.selected_filters,
+        app_state.filter_multipliers,
+        filter_collection
+    )
+    
+    if not selected_indices:
+        return None
+    
+    # Get filter transmission data
+    transmission, _, combined_transmission = compute_filter_transmission(
+        selected_indices,
+        filter_collection.filter_matrix
+    )
+    
+    if transmission is None:
+        return None
+    
+    # Use combined transmission if available, otherwise single filter transmission
+    active_transmission = combined_transmission if combined_transmission is not None else transmission
+    
+    # Build metadata for the combined filter stack
+    counts = {}
+    for filter_name in app_state.selected_filters:
+        if filter_name in filter_collection.get_display_to_index_map():
+            idx = filter_collection.get_display_to_index_map()[filter_name]
+            filter_row = filter_collection.df.iloc[idx]
+            
+            key = (filter_row['Manufacturer'], filter_row['Filter Number'], filter_row['Filter Name'])
+            multiplier = app_state.filter_multipliers.get(filter_name, 1)
+            counts[key] = counts.get(key, 0) + multiplier
+    
+    # Create metadata string with "+" separator
+    metadata_parts = []
+    for (manufacturer, filter_number, filter_name), count in counts.items():
+        if count > 1:
+            part = f"{manufacturer} {filter_number} ({filter_name}) x{count}"
+        else:
+            part = f"{manufacturer} {filter_number} ({filter_name})"
+        metadata_parts.append(part)
+    
+    combined_metadata = " + ".join(metadata_parts)
+    
+    # Get the first filter's hex color
+    first_filter_idx = selected_indices[0]
+    first_filter_row = filter_collection.df.iloc[first_filter_idx]
+    hex_color = first_filter_row.get('Hex Color', '#808080')
+    
+    # Filter to only include wavelengths where we have actual filter data
+    # The interpolation function fills values outside filter range with NaN
+    # So we only include wavelengths where transmission is not NaN (indicating actual filter coverage)
+    transmission_percentage = active_transmission * 100
+    
+    # Create mask for wavelengths with actual filter data (not NaN)
+    meaningful_data_mask = ~np.isnan(active_transmission)
+    
+    # If no valid data found, include all data (fallback - shouldn't happen)
+    if not np.any(meaningful_data_mask):
+        meaningful_data_mask = np.ones_like(active_transmission, dtype=bool)
+    
+    # Create filtered arrays only for meaningful wavelengths
+    valid_wavelengths = INTERP_GRID[meaningful_data_mask].astype(int)
+    valid_transmission = np.round(transmission_percentage[meaningful_data_mask], 3)
+    
+    # Build TSV content manually to avoid pandas formatting issues
+    num_rows = len(valid_wavelengths)
+    header = "Wavelength\tTransmittance\thex_color\tManufacturer\tName\tFilter Number"
+    
+    # Build data rows
+    rows = [header]
+    for i in range(num_rows):
+        wavelength = valid_wavelengths[i]
+        transmission = valid_transmission[i]
+        color = hex_color if i == 0 else ""
+        manufacturer = combined_metadata if i == 0 else ""
+        name = "Combined Filter Stack" if i == 0 else ""
+        filter_num = f"STACK_{len(selected_indices)}" if i == 0 else ""
+        
+        row = f"{wavelength}\t{transmission}\t{color}\t{manufacturer}\t{name}\t{filter_num}"
+        rows.append(row)
+    
+    tsv_content = "\n".join(rows)
+    
+    return tsv_content
+
+
+def generate_tsv_for_download(
+    app_state: "StateManager",
+    filter_collection: FilterCollection
+) -> bool:
+    """
+    Generate TSV data and prepare it for download (does not save to disk).
+    
+    Args:
+        app_state: Current application state
+        filter_collection: Available filters
+        
+    Returns:
+        True if generation was successful, False otherwise
+    """
+    tsv_content = _create_tsv_data(app_state, filter_collection)
+    if not tsv_content:
+        return False
+    
+    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"FilterStack_{timestamp}.tsv"
+    app_state.last_tsv_export = {
+        'bytes': tsv_content.encode('utf-8'),
+        'name': filename,
+        'timestamp': timestamp
+    }
+    
+    return True
+
+
+def generate_full_report(
+    app_state: "StateManager",
+    filter_collection: FilterCollection,
+    selected_camera: Optional[str] = None
+) -> bool:
+    """
+    Generate both PNG and TSV reports and save them to the output folder with matching filter names.
+    
+    Args:
+        app_state: Current application state
+        filter_collection: Available filters
+        selected_camera: Name of selected camera (optional)
+        
+    Returns:
+        True if at least one report was generated successfully, False otherwise
+    """
+    png_success = False
+    tsv_success = False
+    
+    # Generate PNG report (this already saves to output folder with filter-based name)
+    if generate_application_report(app_state, filter_collection, selected_camera):
+        if app_state.last_export and app_state.last_export.get("name"):
+            png_success = True
+            
+            # Extract base name from PNG (remove .png extension) for TSV
+            png_name = app_state.last_export["name"]
+            base_filename = png_name.replace(".png", "")
+            
+            # Generate TSV export with same base name
+            tsv_content = _create_tsv_data(app_state, filter_collection)
+            if tsv_content:
+                # Create output directory (same as PNG)
+                camera_name = selected_camera or "UnknownCamera"
+                illuminant_name = app_state.illuminant_name or "UnknownIlluminant"
+                output_dir = Path("output") / sanitize_filename_component(camera_name) / sanitize_filename_component(illuminant_name)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save TSV to output folder with same base name as PNG
+                tsv_path = output_dir / f"{base_filename}.tsv"
+                with open(tsv_path, "w", encoding='utf-8') as f:
+                    f.write(tsv_content)
+                
+                # Also store for download
+                timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+                app_state.last_tsv_export = {
+                    'bytes': tsv_content.encode('utf-8'),
+                    'name': f"{base_filename}.tsv",
+                    'timestamp': timestamp
+                }
+                tsv_success = True
+    
+    return png_success or tsv_success
+
+>>>>>>> Stashed changes

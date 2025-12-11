@@ -84,6 +84,7 @@ class StateManager:
             
             # Export/report state
             'last_export': {},
+            'last_tsv_export': {},
             
             # UI state (non-widget controlled)
             'import_status': None,
@@ -163,6 +164,7 @@ class StateManager:
             'white_balance_gains': DEFAULT_WB_GAINS.copy(),
             # Note: channel_mixer is now handled dynamically via _build_live_channel_mixer()
             'last_export': {},
+            'last_tsv_export': {},
         }
         
         # Handle special cases for widget-controlled state
@@ -277,6 +279,7 @@ class StateManager:
         self.combined_transmission = None
         self.white_balance_gains = DEFAULT_WB_GAINS.copy()
         self.last_export = {}
+        self.last_tsv_export = {}
         self.import_status = None
         self.import_error_message = None
         

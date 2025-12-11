@@ -105,6 +105,7 @@ from services.visualization import (
 from services.app_operations import (
     process_reflector_data,
     generate_application_report,
+    generate_full_report,
     rebuild_application_cache,
-    setup_report_download
+    generate_tsv_for_download
 )

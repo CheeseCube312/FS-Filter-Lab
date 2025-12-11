@@ -129,6 +129,42 @@ def handle_app_actions(actions: Dict[str, Any], state_manager: StateManager, dat
         from views.ui_utils import try_operation
         try_operation(_generate_report, "Report generation failed")
     
+    # Handle full report generation (PNG + TSV)
+    if 'generate_full_report' in actions:
+        selected_camera = actions['generate_full_report']
+        def _generate_full_report():
+            from services.app_operations import generate_full_report
+            success = generate_full_report(
+                app_state=state_manager,
+                filter_collection=data['filter_collection'],
+                selected_camera=selected_camera
+            )
+            if success:
+                show_success_message("✅ Full report generated! Files saved to output folder.")
+                st.rerun()
+            else:
+                handle_error("Failed to generate full report. Check console for details.")
+        
+        from views.ui_utils import try_operation
+        try_operation(_generate_full_report, "Full report generation failed")
+
+    # Handle TSV generation for download
+    if 'export_tsv' in actions and actions['export_tsv']:
+        def _generate_tsv():
+            from services.app_operations import generate_tsv_for_download
+            success = generate_tsv_for_download(
+                app_state=state_manager,
+                filter_collection=data['filter_collection']
+            )
+            if success:
+                show_success_message("✅ TSV generated and ready for download!")
+                st.rerun()
+            else:
+                handle_error("Failed to generate TSV. Make sure you have filters selected.")
+        
+        from views.ui_utils import try_operation
+        try_operation(_generate_tsv, "TSV generation failed")
+
     # Handle cache rebuild
     if 'rebuild_cache' in actions and actions['rebuild_cache']:
         def _rebuild_cache():

@@ -73,7 +73,7 @@ from views.ui_utils import (
 from views.sidebar import (
     filter_selection,
     filter_multipliers,
-    extras,
+    analysis_setup,
     settings_panel,
     reflector_preview
 )
