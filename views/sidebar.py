@@ -46,26 +46,6 @@ def filter_selection(
         default=current_selection,
         key="selected_filters",
     )
-
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-    # --- Advanced search toggle ---
-    show_advanced_search = st.sidebar.checkbox(
-        UI_SECTIONS['show_advanced_search'], 
-        key="show_advanced_search"
-    )
-    
-    # --- Channel mixer toggle ---
-    show_channel_mixer = st.sidebar.checkbox(
-        UI_SECTIONS['show_channel_mixer'],
-        key="show_channel_mixer",
-        help=UI_HELP_TEXT['channel_mixer']
-    )
-
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
     return selected
 
 
@@ -119,24 +99,6 @@ def analysis_setup(
     Returns:
         Tuple of (illuminant_name, illuminant, qe, camera_name, target_profile, selected_reflector_idx)
     """
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-    with st.sidebar.expander(UI_SECTIONS['extras'], expanded=False):
-        # --- Illuminant Selector ---
-        if illuminants:
-            illum_names = list(illuminants.keys())
-            default_idx = illum_names.index(DEFAULT_ILLUMINANT) if DEFAULT_ILLUMINANT in illum_names else 0
-            selected_illum_name = st.selectbox(UI_LABELS['scene_illuminant'], illum_names, index=default_idx)
-            selected_illum = illuminants[selected_illum_name]
-        else:
-            handle_error(UI_WARNING_MESSAGES['no_illuminants'])
-            selected_illum_name, selected_illum = None, None
-
-        # --- QE Profile Selector ---
-        default_idx = camera_keys.index(default_camera_key) + 1 if default_camera_key in camera_keys else 0
-        selected_camera = st.selectbox(UI_LABELS['sensor_qe_profile'], ["None"] + camera_keys, index=default_idx)
-        current_qe = qe_data.get(selected_camera) if selected_camera != "None" else None
-=======
     # --- Illuminant Selector ---
     if illuminants:
         illum_names = list(illuminants.keys())
@@ -151,25 +113,6 @@ def analysis_setup(
     default_idx = camera_keys.index(default_camera_key) + 1 if default_camera_key in camera_keys else 0
     selected_camera = st.selectbox(UI_LABELS['sensor_qe_profile'], ["None"] + camera_keys, index=default_idx)
     current_qe = qe_data.get(selected_camera) if selected_camera != "None" else None
->>>>>>> Stashed changes
-
-=======
-    # --- Illuminant Selector ---
-    if illuminants:
-        illum_names = list(illuminants.keys())
-        default_idx = illum_names.index(DEFAULT_ILLUMINANT) if DEFAULT_ILLUMINANT in illum_names else 0
-        selected_illum_name = st.selectbox(UI_LABELS['scene_illuminant'], illum_names, index=default_idx)
-        selected_illum = illuminants[selected_illum_name]
-    else:
-        handle_error(UI_WARNING_MESSAGES['no_illuminants'])
-        selected_illum_name, selected_illum = None, None
-
-    # --- QE Profile Selector ---
-    default_idx = camera_keys.index(default_camera_key) + 1 if default_camera_key in camera_keys else 0
-    selected_camera = st.selectbox(UI_LABELS['sensor_qe_profile'], ["None"] + camera_keys, index=default_idx)
-    current_qe = qe_data.get(selected_camera) if selected_camera != "None" else None
-
->>>>>>> Stashed changes
     # --- Target Profile Selector ---
     filter_display_names = filter_collection.get_display_names()
     display_to_index = filter_collection.get_display_to_index_map()
@@ -188,64 +131,11 @@ def analysis_setup(
         target_index = display_to_index[target_selection]
         filter_obj = filter_collection.filters[target_index]
         
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-        target_options = ["None"] + list(filter_display_names)
-        default_target = "None"
-        target_selection = st.selectbox(
-            UI_LABELS['reference_target'],
-            options=target_options,
-            index=target_options.index(default_target),
-            key="target_profile_selection"
-        )
-
-        target_profile = None
-        if target_selection != "None":
-            target_index = display_to_index[target_selection]
-            filter_obj = filter_collection.filters[target_index]
-            
-            target_profile = TargetProfile(
-                name=filter_obj.name,
-                values=filter_obj.transmission * 100,  # Convert to percentage
-                valid=~np.isnan(filter_obj.transmission)
-            )
-
-        # --- Reflector Spectrum Selector ---
-        selected_reflector_idx = None
-        if reflector_collection and hasattr(reflector_collection, "reflectors") and reflector_collection.reflectors:
-            reflector_names = [r.name for r in reflector_collection.reflectors]
-            # Add "None" option to allow hiding the single reflector preview
-            options = ["None"] + list(range(len(reflector_names)))
-            format_func = lambda idx: "None" if idx == "None" else reflector_names[idx]
-            
-            selection = st.selectbox(
-                UI_LABELS['surface_reflectance'],
-                options=options,
-                format_func=format_func,
-                index=0,  # Default to "None"
-                key="selected_reflector_idx"
-            )
-            
-            # Convert "None" selection to None, keep numeric indices as-is
-            selected_reflector_idx = None if selection == "None" else selection
-        else:
-            from views.ui_utils import show_info_message
-            show_info_message(UI_INFO_MESSAGES['no_reflectors'])
-=======
         target_profile = TargetProfile(
             name=filter_obj.name,
             values=filter_obj.transmission * 100,  # Convert to percentage
             valid=~np.isnan(filter_obj.transmission)
         )
-
-=======
-        target_profile = TargetProfile(
-            name=filter_obj.name,
-            values=filter_obj.transmission * 100,  # Convert to percentage
-            valid=~np.isnan(filter_obj.transmission)
-        )
-
->>>>>>> Stashed changes
     # --- Reflector Spectrum Selector ---
     selected_reflector_idx = None
     if reflector_collection and hasattr(reflector_collection, "reflectors") and reflector_collection.reflectors:
@@ -267,10 +157,6 @@ def analysis_setup(
     else:
         from views.ui_utils import show_info_message
         show_info_message(UI_INFO_MESSAGES['no_reflectors'])
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
 
     return selected_illum_name, selected_illum, current_qe, selected_camera, target_profile, selected_reflector_idx
 
@@ -306,34 +192,9 @@ def settings_panel(app_state) -> Tuple[bool, bool, Dict[str, bool]]:
         
         # Log view state is managed by the widget and accessed through app_state.log_view
         
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-        # Rebuild Cache button
-        rebuild_cache = st.button(UI_BUTTONS['rebuild_cache'])
-            
-        # Import data toggle button using app_state
-        if app_state.show_import_data:
-            if st.button(UI_BUTTONS['close_importers']):
-                st.session_state['show_import_data'] = False
-                st.rerun()
-        else:
-            if st.button(UI_BUTTONS['csv_importers']):
-                st.session_state['show_import_data'] = True
-                st.rerun()
-        
-        show_import = app_state.show_import_data
-            
-    return rebuild_cache, show_import, rgb_channels
-=======
         show_import = app_state.show_import_data
             
     return False, show_import, rgb_channels
->>>>>>> Stashed changes
-=======
-        show_import = app_state.show_import_data
-            
-    return False, show_import, rgb_channels
->>>>>>> Stashed changes
 
 
 def reflector_preview(pixels: np.ndarray, reflector_names: Optional[List[str]] = None) -> None:
@@ -404,10 +265,6 @@ def single_reflector_preview(
 def render_sidebar(app_state, data):
     """
     Render the application sidebar with controls and settings.
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
     
     Args:
         app_state: Application state manager
@@ -415,21 +272,6 @@ def render_sidebar(app_state, data):
         
     Returns:
         Dictionary of user actions from sidebar interactions
-<<<<<<< Updated upstream
-    """
-    """
-    Render the complete sidebar with all controls.
-=======
->>>>>>> Stashed changes
-    
-    Args:
-        app_state: Application state manager
-        data: Application data dictionary
-        
-    Returns:
-        Dictionary of user actions from sidebar interactions
-=======
->>>>>>> Stashed changes
     """
     import streamlit as st
     
@@ -454,14 +296,6 @@ def render_sidebar(app_state, data):
     # ========== 1. FILTER SELECTION & CONFIGURATION (Always visible) ==========
     selected_filters = filter_selection(filter_collection, app_state)
     filter_multipliers_dict = filter_multipliers(selected_filters, app_state)
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-    
-    # Filter multipliers are not widget-controlled, so we update them in app_state
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
     app_state.filter_multipliers = filter_multipliers_dict
     
     # ========== 2. ANALYSIS SETUP (Collapsed by default) ==========
@@ -478,13 +312,6 @@ def render_sidebar(app_state, data):
     app_state.illuminant = selected_illum
     app_state.illuminant_name = selected_illum_name
     app_state.target_profile = target_profile
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-    # Reflector selection is widget-managed and accessed directly from session_state
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
     
     # ========== 3. DISPLAY & VISUALIZATION (Collapsed by default) ==========
     with st.sidebar.expander(UI_SECTIONS['display_visualization'], expanded=False):
@@ -551,23 +378,6 @@ def render_sidebar(app_state, data):
             if st.button("Download Filter Stack TSV"):
                 actions['export_tsv'] = True
     
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-    # Report generation
-    if st.sidebar.button(UI_BUTTONS['generate_report']):
-        actions['generate_report'] = selected_camera
-    
-    # Show download button if a report is ready
-    setup_report_download(app_state)
-    
-    # Settings Panel (using existing function from this module)
-    rebuild_cache, show_import, rgb_channels = settings_panel(app_state)
-    
-    # RGB channels and import data state are widget-controlled and accessed through app_state
-    
-    if rebuild_cache:
-        actions['rebuild_cache'] = True
-=======
     # ========== 5. DATA MANAGEMENT (Collapsed by default) ==========
     with st.sidebar.expander(UI_SECTIONS['data_management'], expanded=False):
         # Rebuild Cache button
@@ -587,27 +397,5 @@ def render_sidebar(app_state, data):
     # ========== REFLECTOR PREVIEW (Always visible when selected) ==========
     # This stays outside expanders and shows when a reflector is selected
     # The reflector preview logic will be handled in the main content rendering
->>>>>>> Stashed changes
-=======
-    # ========== 5. DATA MANAGEMENT (Collapsed by default) ==========
-    with st.sidebar.expander(UI_SECTIONS['data_management'], expanded=False):
-        # Rebuild Cache button
-        if st.button(UI_BUTTONS['rebuild_cache']):
-            actions['rebuild_cache'] = True
-            
-        # Import data toggle
-        if app_state.show_import_data:
-            if st.button(UI_BUTTONS['close_importers']):
-                st.session_state['show_import_data'] = False
-                st.rerun()
-        else:
-            if st.button(UI_BUTTONS['csv_importers']):
-                st.session_state['show_import_data'] = True
-                st.rerun()
-    
-    # ========== REFLECTOR PREVIEW (Always visible when selected) ==========
-    # This stays outside expanders and shows when a reflector is selected
-    # The reflector preview logic will be handled in the main content rendering
->>>>>>> Stashed changes
         
     return actions
