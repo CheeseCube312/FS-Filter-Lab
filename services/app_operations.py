@@ -40,6 +40,10 @@ from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 # Third-party imports
 import numpy as np
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+=======
+import pandas as pd
+>>>>>>> Stashed changes
 =======
 import pandas as pd
 >>>>>>> Stashed changes
@@ -48,8 +52,11 @@ import streamlit as st
 # Local imports
 from models.core import FilterCollection, ReflectorCollection
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 from models.constants import INTERP_GRID, CACHE_DIR, UI_BUTTONS
 =======
+=======
+>>>>>>> Stashed changes
 from models.constants import INTERP_GRID, CACHE_DIR
 from services.data import (
     load_filter_collection,
@@ -58,6 +65,9 @@ from services.data import (
     load_reflector_collection
 )
 from views.ui_utils import try_operation, handle_error
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 from services.calculations import (
     compute_filter_transmission,
@@ -68,7 +78,11 @@ from services.calculations import (
 )
 from services.visualization import (
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     generate_report_png, add_filter_curve_to_matplotlib, generate_report_png_v2,
+=======
+    add_filter_curve_to_matplotlib, generate_report_png_v2,
+>>>>>>> Stashed changes
 =======
     add_filter_curve_to_matplotlib, generate_report_png_v2,
 >>>>>>> Stashed changes
@@ -249,7 +263,11 @@ def generate_application_report(
     
     # Compute effective stops
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     effective_stops_fn = lambda t, qe: compute_effective_stops(t, qe, illuminant) if qe is not None else (0.0, 0.0)
+=======
+    effective_stops_fn = lambda t, qe, illum: compute_effective_stops(t, qe, illum) if qe is not None else (0.0, 0.0)
+>>>>>>> Stashed changes
 =======
     effective_stops_fn = lambda t, qe, illum: compute_effective_stops(t, qe, illum) if qe is not None else (0.0, 0.0)
 >>>>>>> Stashed changes
@@ -343,6 +361,7 @@ def _create_tsv_data(
         TSV content string or None if export fails
     """
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     last_export = app_state.last_export
     if last_export and last_export.get("bytes"):
         st.download_button(
@@ -352,6 +371,8 @@ def _create_tsv_data(
             mime="image/png"
         )
 =======
+=======
+>>>>>>> Stashed changes
     # Get selected filter indices
     selected_indices = compute_selected_filter_indices(
         app_state.selected_filters,
@@ -521,4 +542,7 @@ def generate_full_report(
     
     return png_success or tsv_success
 
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
