@@ -6,7 +6,7 @@ echo Setting up Python environment...
 python -m venv .venv
 call .venv\Scripts\activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r program\requirements.txt
 
-streamlit run app.py
+streamlit run program\app.py
 

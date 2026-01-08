@@ -42,7 +42,7 @@ import streamlit as st
 
 # Local imports
 from models.core import FilterCollection, ReflectorCollection
-from models.constants import INTERP_GRID
+from models.constants import INTERP_GRID, DATA_FOLDERS
 from services.data import (
     load_filter_collection,
     load_quantum_efficiencies, 
@@ -105,10 +105,10 @@ def initialize_application_data():
     Initialize and validate all application data sources.
     
     Performs comprehensive loading of all required data:
-    1. Filter collection from TSV files in data/filters_data/
-    2. Camera quantum efficiency curves from data/QE_data/  
-    3. Illuminant spectra from data/illuminants/
-    4. Reflector spectra from data/reflectors/
+    1. Filter collection from TSV files in program/data/filters_data/
+    2. Camera quantum efficiency curves from program/data/QE_data/  
+    3. Illuminant spectra from program/data/illuminants/
+    4. Reflector spectra from program/data/reflectors/
     
     Each data source is loaded with error handling and validation.
     Failed loads use appropriate fallback values to maintain application stability.
@@ -137,7 +137,7 @@ def initialize_application_data():
     )
     
     if not filter_collection.filters:
-        handle_error("No filter data found. Please add .tsv files to data/filters_data", stop_execution=True)
+        handle_error(f"No filter data found. Please add .tsv files to {DATA_FOLDERS['filters']}", stop_execution=True)
         return None
         
     # Load QE data

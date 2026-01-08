@@ -10,7 +10,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Any, Optional
 
 # Local imports
-from models.constants import INTERP_GRID, UI_BUTTONS, UI_WARNING_MESSAGES
+from models.constants import INTERP_GRID, UI_BUTTONS, UI_WARNING_MESSAGES, OUTPUT_FOLDERS
 from views.ui_utils import is_dark_color, is_valid_hex_color, handle_error
 from services.visualization import create_sparkline_plot
 
@@ -539,7 +539,7 @@ def import_reflectance_tab():
                             csv_filename = os.path.splitext(ecosis_file.name)[0]  # Remove .csv extension
                             csv_filename = ''.join(c for c in csv_filename if c.isalnum() or c in (' ', '_', '-')).rstrip().replace(' ', '_')
                             
-                            output_dir = os.path.join("data", "reflectors", "Ecosis", csv_filename)
+                            output_dir = os.path.join(OUTPUT_FOLDERS['ecosis'], csv_filename)
                             os.makedirs(output_dir, exist_ok=True)
                             
                             created_files = import_ecosis_csv(

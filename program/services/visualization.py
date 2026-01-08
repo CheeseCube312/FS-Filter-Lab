@@ -350,8 +350,8 @@ def _save_report_to_file(fig, buf: io.BytesIO, fname: str, camera_name: str, ill
     buf.seek(0)
     plt.close(fig)
 
-    # Save to /outputs/[QE]/[Illuminant] folder
-    output_dir = os.path.join("output", sanitize_fn(camera_name), sanitize_fn(illuminant_name))
+    # Save to program/output/[QE]/[Illuminant] folder
+    output_dir = os.path.join(OUTPUT_FOLDERS['reports'], sanitize_fn(camera_name), sanitize_fn(illuminant_name))
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, fname)
     with open(output_path, "wb") as f:

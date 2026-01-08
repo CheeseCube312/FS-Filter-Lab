@@ -32,7 +32,7 @@ import requests
 import json
 import logging
 import re
-from models.constants import INTERP_GRID, DATA_FOLDERS, METADATA_FIELDS
+from models.constants import INTERP_GRID, DATA_FOLDERS, METADATA_FIELDS, OUTPUT_FOLDERS
 
 # Configure logging for debugging import issues
 logger = logging.getLogger(__name__)
@@ -636,7 +636,7 @@ def import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
         suffix = get_extrapolation_suffix(extrap_lower, extrap_upper)
         filename = f"{sanitized}{suffix}.tsv"
         
-        out_dir = os.path.join("data", "filters_data", meta["manufacturer"])
+        out_dir = os.path.join(OUTPUT_FOLDERS['filter_import'], meta["manufacturer"])
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, filename)
         

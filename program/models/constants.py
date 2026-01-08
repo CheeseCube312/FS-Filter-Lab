@@ -46,10 +46,17 @@ EPSILON = 1e-6  # Small value to prevent division by zero and log domain errors
 
 # Data directory paths - centralized for consistency
 DATA_FOLDERS = {
-    'filters': "data/filters_data",
-    'qe': "data/QE_data", 
-    'illuminants': "data/illuminants",
-    'reflectors': "data/reflectors"
+    'filters': "program/data/filters_data",
+    'qe': "program/data/QE_data", 
+    'illuminants': "program/data/illuminants",
+    'reflectors': "program/data/reflectors"
+}
+
+# Output directory paths
+OUTPUT_FOLDERS = {
+    'reports': "program/output",  # Main output directory for generated reports
+    'ecosis': "program/data/reflectors/Ecosis",  # ECOSIS import destination
+    'filter_import': "program/data/filters_data"  # Filter import destination
 }
 
 # File extensions used throughout the application
@@ -118,7 +125,7 @@ DEFAULT_ILLUMINANT = "AM1.5_Global_REL"      # Standard solar spectrum reference
 DEFAULT_HEX_COLOR = "#838383"                # Default filter color (neutral gray)
 
 # Cache configuration
-CACHE_DIR = Path("cache")  # Directory for storing cached computation results
+CACHE_DIR = Path("program/cache")  # Directory for storing cached computation results
 
 # RGB channel configuration
 QE_COLORS = {
