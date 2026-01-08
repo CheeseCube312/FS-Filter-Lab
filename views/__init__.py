@@ -49,33 +49,18 @@ Architecture Principles:
 # Color utilities
 from views.ui_utils import (
     is_dark_color,
-    is_valid_hex_color,
-    color_swatch
+    is_valid_hex_color
 )
 
-# UI components
-from views.ui_utils import (
-    styled_header,
-    colored_box,
-    expandable_section,
-    status_indicator,
-    section_separator
-)
+# UI components - removed unused functions
 
-# Data display utilities
-from views.ui_utils import (
-    format_data_table,
-    format_value_with_unit,
-    display_metric_card
-)
+# Data display utilities - removed unused functions
 
 # ============== Sidebar Components =================
 from views.sidebar import (
     filter_selection,
     filter_multipliers,
-    analysis_setup,
-    settings_panel,
-    reflector_preview
+    analysis_setup
 )
 
 # ============== Main Content Components =================
@@ -86,9 +71,7 @@ from views.main_content import (
     raw_qe_and_illuminant,
     filter_response_display,
     sensor_response_display,
-    render_chart,
-    render_expandable_chart,
-    render_chart_with_controls
+    render_chart
 )
 
 # ============== Form Components =================
@@ -105,5 +88,7 @@ from views.ui_utils import (
     show_info_message,
     show_success_message,
     handle_error,
-    try_operation
+    try_operation,
+    format_error_message,
+    show_template_error
 )

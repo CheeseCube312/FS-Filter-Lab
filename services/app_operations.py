@@ -8,7 +8,6 @@ Key Functions:
 
 Data Initialization:
 - initialize_application_data(): Loads and validates all required data sources
-- process_reflector_data(): Validates and processes reflector spectral data
 
 Report Generation:
 - generate_application_report(): Creates comprehensive PNG analysis reports
@@ -32,24 +31,24 @@ Architecture:
 - Supports both synchronous and background operation patterns
 """
 # Standard library imports
-import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
 
 # Third-party imports
 import numpy as np
-import pandas as pd
 import streamlit as st
 
 # Local imports
 from models.core import FilterCollection, ReflectorCollection
-from models.constants import INTERP_GRID, CACHE_DIR
+from models.constants import INTERP_GRID
 from services.data import (
     load_filter_collection,
     load_quantum_efficiencies, 
     load_illuminant_collection,
-    load_reflector_collection
+    load_reflector_collection,
+    create_empty_filter_collection
 )
 from views.ui_utils import try_operation, handle_error
 from services.calculations import (
@@ -134,7 +133,7 @@ def initialize_application_data():
     filter_collection = try_operation(
         load_filter_collection,
         "Failed to load filter collection",
-        default_value=FilterCollection([], None, np.array([]), np.array([]))
+        default_value=create_empty_filter_collection()
     )
     
     if not filter_collection.filters:
@@ -162,9 +161,6 @@ def initialize_application_data():
         default_value=ReflectorCollection([], np.array([]))
     )
     
-    # Process reflector data
-    process_reflector_data(reflector_collection)
-    
     return {
         'filter_collection': filter_collection,
         'camera_keys': camera_keys,
@@ -174,18 +170,6 @@ def initialize_application_data():
         'illuminant_metadata': illuminant_metadata,
         'reflector_collection': reflector_collection
     }
-
-
-def process_reflector_data(reflector_collection: ReflectorCollection) -> None:
-    """
-    Process and validate the reflector data.
-    This ensures the reflector data is valid and fixes any issues.
-    
-    Args:
-        reflector_collection: Collection of reflector spectra
-    """
-    # No validation/fix needed; function removed in new data format
-    pass
 
 
 def generate_application_report(
@@ -350,10 +334,11 @@ def _create_tsv_data(
     active_transmission = combined_transmission if combined_transmission is not None else transmission
     
     # Build metadata for the combined filter stack
+    display_to_index = filter_collection.get_display_to_index_map()
     counts = {}
     for filter_name in app_state.selected_filters:
-        if filter_name in filter_collection.get_display_to_index_map():
-            idx = filter_collection.get_display_to_index_map()[filter_name]
+        if filter_name in display_to_index:
+            idx = display_to_index[filter_name]
             filter_row = filter_collection.df.iloc[idx]
             
             key = (filter_row['Manufacturer'], filter_row['Filter Number'], filter_row['Filter Name'])
@@ -393,25 +378,28 @@ def _create_tsv_data(
     valid_transmission = np.round(transmission_percentage[meaningful_data_mask], 3)
     
     # Build TSV content manually to avoid pandas formatting issues
-    num_rows = len(valid_wavelengths)
     header = "Wavelength\tTransmittance\thex_color\tManufacturer\tName\tFilter Number"
-    
-    # Build data rows
     rows = [header]
-    for i in range(num_rows):
-        wavelength = valid_wavelengths[i]
-        transmission = valid_transmission[i]
-        color = hex_color if i == 0 else ""
-        manufacturer = combined_metadata if i == 0 else ""
-        name = "Combined Filter Stack" if i == 0 else ""
-        filter_num = f"STACK_{len(selected_indices)}" if i == 0 else ""
+    
+    # Build data rows - metadata only on first row
+    for i, (wavelength, transmission) in enumerate(zip(valid_wavelengths, valid_transmission)):
+        if i == 0:
+            # First row includes all metadata
+            row_data = [
+                str(int(wavelength)),
+                str(transmission), 
+                hex_color,
+                combined_metadata,
+                "Combined Filter Stack",
+                f"STACK_{len(selected_indices)}"
+            ]
+        else:
+            # Subsequent rows have empty metadata fields
+            row_data = [str(int(wavelength)), str(transmission), "", "", "", ""]
         
-        row = f"{wavelength}\t{transmission}\t{color}\t{manufacturer}\t{name}\t{filter_num}"
-        rows.append(row)
+        rows.append("\t".join(row_data))
     
-    tsv_content = "\n".join(rows)
-    
-    return tsv_content
+    return "\n".join(rows)
 
 
 def generate_tsv_for_download(
@@ -432,7 +420,7 @@ def generate_tsv_for_download(
     if not tsv_content:
         return False
     
-    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"FilterStack_{timestamp}.tsv"
     app_state.last_tsv_export = {
         'bytes': tsv_content.encode('utf-8'),
@@ -486,7 +474,7 @@ def generate_full_report(
                     f.write(tsv_content)
                 
                 # Also store for download
-                timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 app_state.last_tsv_export = {
                     'bytes': tsv_content.encode('utf-8'),
                     'name': f"{base_filename}.tsv",

@@ -12,10 +12,10 @@ from typing import Dict, List, Optional, Tuple, Any
 # Local imports
 from models.constants import (
     CACHE_DIR, DEFAULT_ILLUMINANT, UI_BUTTONS, UI_SECTIONS, UI_LABELS, 
-    UI_INFO_MESSAGES, UI_WARNING_MESSAGES, UI_HELP_TEXT
+    UI_INFO_MESSAGES, UI_WARNING_MESSAGES, UI_HELP_TEXT, ACTION_TYPES
 )
 from models.core import FilterCollection, TargetProfile, ReflectorCollection
-from views.ui_utils import try_operation, handle_error
+from views.ui_utils import try_operation, handle_error, show_info_message
 
 
 def filter_selection(
@@ -23,18 +23,24 @@ def filter_selection(
     app_state
 ) -> List[str]:
     """
-    UI component for filter selection in the sidebar.
+    UI component for filter selection.
     
     Args:
         filter_collection: Collection of available filters
-        state_manager: Unified state manager
+        app_state: Application state manager
     
     Returns:
         List of selected filter display names
     """
     # --- Prepare default value for widget (including pending selections) ---
     current_selection = app_state.selected_filters
-    # Note: Pending selections are handled directly through session_state for widget compatibility
+    
+    # Check for pending selections from advanced search
+    pending_selections = st.session_state.get("_pending_selected_filters", [])
+    if pending_selections:
+        # Add pending selections to current selection and clear them
+        current_selection = list(set(current_selection + pending_selections))
+        st.session_state.pop("_pending_selected_filters", None)
 
     # --- Widget logic ---
     filter_display_names = filter_collection.get_display_names()
@@ -51,7 +57,7 @@ def filter_selection(
 
 def filter_multipliers(selected: List[str], app_state) -> Dict[str, int]:
     """
-    UI component for filter multiplier controls in the sidebar.
+    UI component for filter multiplier controls.
     
     Args:
         selected: List of selected filter display names
@@ -85,7 +91,7 @@ def analysis_setup(
     reflector_collection: Any
 ) -> Tuple[Optional[str], Optional[np.ndarray], Optional[Dict[str, np.ndarray]], Optional[str], Optional[TargetProfile], Optional[int]]:
     """
-    UI component for analysis setup (illuminant, QE, target) in the sidebar.
+    UI component for analysis setup (illuminant, QE, target).
     
     Args:
         illuminants: Dictionary of illuminant curves by name
@@ -133,7 +139,7 @@ def analysis_setup(
         
         target_profile = TargetProfile(
             name=filter_obj.name,
-            values=filter_obj.transmission * 100,  # Convert to percentage
+            values=filter_obj.transmission,  # Keep 0-1 scale consistent with filters
             valid=~np.isnan(filter_obj.transmission)
         )
     # --- Reflector Spectrum Selector ---
@@ -155,111 +161,9 @@ def analysis_setup(
         # Convert "None" selection to None, keep numeric indices as-is
         selected_reflector_idx = None if selection == "None" else selection
     else:
-        from views.ui_utils import show_info_message
         show_info_message(UI_INFO_MESSAGES['no_reflectors'])
 
     return selected_illum_name, selected_illum, current_qe, selected_camera, target_profile, selected_reflector_idx
-
-
-def settings_panel(app_state) -> Tuple[bool, bool, Dict[str, bool]]:
-    """
-    Settings panel in the sidebar.
-    
-    Args:
-        state_manager: Unified state manager
-        
-    Returns:
-        Tuple of (rebuild_cache, show_import, rgb_channels)
-    """
-    with st.sidebar.expander(UI_SECTIONS['settings'], expanded=False):
-        # RGB channel toggles
-        st.markdown(f"**{UI_SECTIONS['sensor_response_channels']}**")
-        rgb_channels = {}
-        for channel in ["R", "G", "B"]:
-            rgb_channels[channel] = st.checkbox(
-                f"{channel} Channel", 
-                key=f"show_{channel}",
-                value=True  # Default to True for first run
-            )
-        
-        # Display options
-        st.markdown(f"**{UI_SECTIONS['display_options']}**")
-        log_view = st.checkbox(
-            UI_LABELS['stop_view_toggle'], 
-            help=UI_HELP_TEXT['stop_view'],
-            key="sidebar_log_view_toggle"
-        )
-        
-        # Log view state is managed by the widget and accessed through app_state.log_view
-        
-        show_import = app_state.show_import_data
-            
-    return False, show_import, rgb_channels
-
-
-def reflector_preview(pixels: np.ndarray, reflector_names: Optional[List[str]] = None) -> None:
-    """
-    Display reflector color preview in the sidebar.
-    
-    Args:
-        pixels: Array of RGB pixel values, shape (n, m, 3)
-        reflector_names: List of reflector names (optional)
-    """
-    # Ensure pixels is a valid RGB array
-    if pixels.ndim != 3 or pixels.shape[2] != 3:
-        handle_error("Invalid pixel array format")
-        return
-    
-    # Display in the sidebar
-    st.sidebar.subheader(UI_SECTIONS['vegetation_preview'])
-    
-    # Use camera-realistic normalization with independent channel saturation
-    from services.visualization import prepare_rgb_for_display
-    pixels_normalized = prepare_rgb_for_display(pixels, auto_exposure=True)
-    
-    # Display the image in the sidebar
-    st.sidebar.image(pixels_normalized, width=300, channels="RGB", output_format="PNG")
-
-
-def single_reflector_preview(
-    pixel_color: np.ndarray, 
-    reflector_name: str,
-    global_max: float = None
-) -> None:
-    """
-    Display single reflector color preview in the sidebar.
-    
-    Args:
-        pixel_color: Single RGB color as 1x1x3 array
-        reflector_name: Name of the reflector
-        global_max: Global maximum value for consistent scaling (optional)
-    """
-    # Ensure pixel_color is a valid RGB array
-    if pixel_color.ndim != 3 or pixel_color.shape[2] != 3:
-        handle_error("Invalid pixel color format")
-        return
-    
-    # Display in the sidebar
-    st.sidebar.subheader(UI_SECTIONS['surface_preview'])
-    
-    # Use camera-realistic normalization
-    from services.visualization import prepare_rgb_for_display
-    
-    if global_max is not None and global_max > 0:
-        # Use consistent scaling with vegetation preview
-        # Apply the same exposure scaling, then camera-realistic saturation
-        pixel_normalized = prepare_rgb_for_display(
-            pixel_color, 
-            saturation_level=global_max, 
-            auto_exposure=False
-        )
-    else:
-        # Independent normalization when no global reference
-        pixel_normalized = prepare_rgb_for_display(pixel_color, auto_exposure=True)
-    
-    # Display the single color as a larger image
-    st.sidebar.image(pixel_normalized, width=200, channels="RGB", output_format="PNG")
-    st.sidebar.caption(f"Selected: {reflector_name}")
 
 
 def render_sidebar(app_state, data):
@@ -275,8 +179,6 @@ def render_sidebar(app_state, data):
     """
     import streamlit as st
     
-    from models.constants import CACHE_DIR
-    from views.ui_utils import try_operation, handle_error
     from services.app_operations import (
         generate_application_report, generate_full_report, 
         rebuild_application_cache
@@ -315,6 +217,11 @@ def render_sidebar(app_state, data):
     
     # ========== 3. DISPLAY & VISUALIZATION (Collapsed by default) ==========
     with st.sidebar.expander(UI_SECTIONS['display_visualization'], expanded=False):
+        # Check for signal to close advanced search
+        if st.session_state.get("_close_advanced_search", False):
+            st.session_state["show_advanced_search"] = False
+            st.session_state.pop("_close_advanced_search", None)
+        
         # Advanced search toggle
         show_advanced_search = st.checkbox(
             UI_SECTIONS['show_advanced_search'], 
@@ -350,7 +257,7 @@ def render_sidebar(app_state, data):
     with st.sidebar.expander(UI_SECTIONS['export_reports'], expanded=False):
         # Generate full report (both PNG and TSV to output folder)
         if st.button(UI_BUTTONS['generate_full_report']):
-            actions['generate_full_report'] = selected_camera
+            actions[ACTION_TYPES['generate_full_report']] = selected_camera
         
         st.markdown("**Individual Downloads:**")
         
@@ -364,7 +271,7 @@ def render_sidebar(app_state, data):
             )
         else:
             if st.button("Download PNG Report"):
-                actions['generate_report'] = selected_camera
+                actions[ACTION_TYPES['generate_report']] = selected_camera
         
         # TSV Export download - generate and download in one step
         if hasattr(app_state, 'last_tsv_export') and app_state.last_tsv_export and app_state.last_tsv_export.get('bytes'):
@@ -376,13 +283,13 @@ def render_sidebar(app_state, data):
             )
         else:
             if st.button("Download Filter Stack TSV"):
-                actions['export_tsv'] = True
+                actions[ACTION_TYPES['export_tsv']] = True
     
     # ========== 5. DATA MANAGEMENT (Collapsed by default) ==========
     with st.sidebar.expander(UI_SECTIONS['data_management'], expanded=False):
         # Rebuild Cache button
         if st.button(UI_BUTTONS['rebuild_cache']):
-            actions['rebuild_cache'] = True
+            actions[ACTION_TYPES['rebuild_cache']] = True
             
         # Import data toggle
         if app_state.show_import_data:

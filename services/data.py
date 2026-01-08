@@ -245,7 +245,8 @@ def _process_filter_file(path: Path) -> Optional[Tuple[dict, np.ndarray, np.ndar
     wavelengths = df[TSV_COLUMNS['wavelength']].astype(float).values
     transmittance = df[TSV_COLUMNS['transmittance']].astype(float).values
     
-    # Normalize if needed
+    # Normalize if needed: Convert from percentage (0-100) to fractional (0-1) scale
+    # All internal calculations use 0-1 scale for mathematical correctness
     if transmittance.max() > 1.5:
         transmittance /= 100.0
     
@@ -383,6 +384,9 @@ def _process_qe_file(path: Path) -> Optional[Tuple[str, Dict[str, np.ndarray], b
             left=np.nan, 
             right=np.nan
         )
+        # Convert QE percentages to 0-1 scale for internal consistency
+        if np.nanmax(interp) > 1.5:
+            interp = interp / 100.0
         channel_data[channel[0]] = interp
     
     # Check if this is the default QE file
@@ -542,7 +546,8 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     # Interpolate to standard grid
     interp_vals = interpolate_to_standard_grid(wl, refl)
     
-    # Normalize reflectance units: if values look like percents (>threshold), convert to fraction [0..1]
+    # Convert from percentage (0-100) to fractional (0-1) scale for internal consistency
+    # All spectral data uses 0-1 scale internally
     if np.nanmax(interp_vals) > SPECTRAL_CONFIG['normalization_threshold']:
         interp_vals = interp_vals / 100.0
     

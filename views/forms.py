@@ -18,7 +18,6 @@ from services.visualization import create_sparkline_plot
 @st.cache_data
 def cached_create_sparkline_plot(wavelengths, transmission, color):
     """Cached version of create_sparkline_plot to improve performance."""
-    """Cached version of create_sparkline_plot to improve performance."""
     return create_sparkline_plot(wavelengths, transmission, color=color)
 
 
@@ -136,13 +135,6 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
         df: DataFrame containing filter metadata
         filter_matrix: Matrix of filter transmission data
     """
-    """
-    Render advanced filter search UI.
-    
-    Args:
-        df: DataFrame of filters
-        filter_matrix: Matrix of filter transmission values
-    """
     # Check if advanced search is enabled (controlled by sidebar toggle)
     if not st.session_state.get("show_advanced_search", False):
         return
@@ -248,16 +240,24 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
             ]
 
             st.session_state["_pending_selected_filters"] = selected_display
-            st.session_state.advanced = False
+            st.session_state["_close_advanced_search"] = True
+            
+            # Clean up selection checkboxes after processing
+            for idx in sorted_filters.index:
+                st.session_state.pop(f"adv_sel_{idx}", None)
+                st.session_state.pop(f"filter_toggle_{idx}", None)
+                
             st.rerun()
-
-    for idx in sorted_filters.index:
-        st.session_state.pop(f"adv_sel_{idx}", None)
-        st.session_state.pop(f"filter_toggle_{idx}", None)
 
     with col_cancel:
         if st.button(UI_BUTTONS['cancel']):
-            st.session_state.advanced = False
+            st.session_state["_close_advanced_search"] = True
+            
+            # Clean up selection checkboxes on cancel
+            for idx in sorted_filters.index:
+                st.session_state.pop(f"adv_sel_{idx}", None)
+                st.session_state.pop(f"filter_toggle_{idx}", None)
+                
             st.rerun()
 
 

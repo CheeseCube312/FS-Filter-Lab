@@ -12,7 +12,8 @@ from models.constants import CACHE_DIR
 from services.app_operations import initialize_application_data
 from views.main_content import render_main_content
 from views.sidebar import render_sidebar
-from views.state import initialize_session_state, handle_app_actions
+from views.state import handle_app_actions
+from services.state_manager import get_state_manager
 from views.ui_utils import handle_error
 
 # Configure Streamlit
@@ -35,7 +36,7 @@ def main():
     data loading, calculations, and visualization.
     """
     # 1. Initialize data and state (using new unified state management)
-    app_state = initialize_session_state()  # Returns StateManager directly
+    app_state = get_state_manager()  # Returns StateManager directly
     data = initialize_application_data()
     
     if not data:

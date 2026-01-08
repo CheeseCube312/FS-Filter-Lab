@@ -2,6 +2,13 @@
 """
 Application constants and configuration values for FS FilterLab.
 
+SCALE CONVENTION:
+All spectral data (filters, QE, reflectors) use FRACTIONAL scale (0-1) internally:
+- 0.0 = 0% (no transmission/response)  
+- 1.0 = 100% (full transmission/response)
+- This enables natural multiplication for filter combinations
+- UI conversions to percentages (* 100) happen only for display
+
 This module centralizes all constant values used throughout the application:
 - Spectral data configuration (wavelength ranges, interpolation grids)
 - Default application settings and values
@@ -226,7 +233,37 @@ UI_WARNING_MESSAGES = {
 
 UI_SUCCESS_MESSAGES = {
     'report_generated': "Report generated successfully!",
-    'cache_rebuilt': "Cache rebuilt successfully! Reloading application..."
+    'cache_rebuilt': "Cache rebuilt successfully! Reloading application...",
+    # Additional action success messages
+    'full_report_generated': "Full report generated. Files saved to output folder.",
+    'tsv_generated': "TSV generated and ready for download!"
+}
+
+# Operation error messages for try_operation calls
+UI_OPERATION_ERRORS = {
+    'report_generation': "Report generation failed",
+    'full_report_generation': "Full report generation failed", 
+    'tsv_generation': "TSV generation failed",
+    'cache_rebuild': "Cache rebuild failed"
+}
+
+# Action type constants to eliminate magic strings
+ACTION_TYPES = {
+    'generate_report': 'generate_report',
+    'generate_full_report': 'generate_full_report',
+    'export_tsv': 'export_tsv',
+    'rebuild_cache': 'rebuild_cache'
+}
+
+# Reusable error message templates for consistent formatting
+ERROR_MESSAGE_TEMPLATES = {
+    'compute_failed': "Cannot compute {metric} for {item}: {reason}.",
+    'import_failed': "Import failed: {reason}",
+    'operation_failed': "{operation} failed",
+    'invalid_format': "Invalid {item} format",
+    'data_not_found': "{data_type} data not found. Make sure you have .tsv files in {directory}.",
+    'file_error': "Failed to {action} file {filename}: {reason}",
+    'validation_error': "{validation_type} validation failed: {details}"
 }
 
 # Tooltip and help text

@@ -6,12 +6,10 @@ session_state as the single source of truth, with a clean object-oriented
 interface for type-safe state access and modification.
 """
 import streamlit as st
-from typing import Any, Dict, List, Optional, Union, TypeVar
+from typing import Any, Dict, List, Optional, Union
 
 from models.constants import DEFAULT_RGB_VISIBILITY, DEFAULT_WB_GAINS, DEFAULT_CHANNEL_MIXER
 from models.core import TargetProfile, ChannelMixerSettings
-
-T = TypeVar('T')
 
 
 class StateManager:
@@ -101,27 +99,7 @@ class StateManager:
             if key not in st.session_state and key not in widget_keys:
                 st.session_state[key] = default_value
 
-    def _safe_set_session_state(self, key: str, value: Any) -> None:
-        """
-        Safely set a session state value with widget conflict protection.
-        
-        Attempts to set the session state key to the given value, but gracefully
-        handles the case where the key is controlled by a Streamlit widget.
-        
-        Args:
-            key: Session state key to set
-            value: Value to assign to the key
-            
-        Note:
-            Widget-controlled keys cannot be modified programmatically and will
-            raise StreamlitAPIException. This method catches and ignores these
-            exceptions to prevent application crashes.
-        """
-        try:
-            st.session_state[key] = value
-        except st.errors.StreamlitAPIException:
-            # Key is managed by a widget, ignore the set operation
-            pass
+
     
     # ========================================================================
     # DYNAMIC ATTRIBUTE ACCESS
@@ -198,7 +176,7 @@ class StateManager:
     
     def __setattr__(self, name: str, value: Any) -> None:
         """Set attribute in session state."""
-        if name.startswith('_') or name in ['_ensure_initialized', '_safe_set_session_state']:
+        if name.startswith('_') or name in ['_ensure_initialized']:
             # Allow private attributes and methods to be set normally
             super().__setattr__(name, value)
         else:
@@ -253,84 +231,11 @@ class StateManager:
         
         return mixer
     
-    def reset(self) -> None:
-        """
-        Reset the application state to default values.
-        
-        Clears all user selections and computed results while preserving
-        the underlying data. Useful for starting fresh analysis or clearing
-        problematic state.
-        
-        Reset Operations:
-            - Clear filter selections and multipliers
-            - Reset display preferences to defaults
-            - Clear computed results and cached calculations
-            - Reset UI toggles and expanded sections
-            - Preserve loaded data (filters, QE, illuminants)
-            
-        Note:
-            Widget-controlled state is reset by directly modifying session_state
-            since widgets cannot be programmatically controlled through the
-            StateManager interface.
-        """
-        # Reset non-widget managed state
-        self.selected_filters = []
-        self.filter_multipliers = {}
-        self.combined_transmission = None
-        self.white_balance_gains = DEFAULT_WB_GAINS.copy()
-        self.last_export = {}
-        self.last_tsv_export = {}
-        self.import_status = None
-        self.import_error_message = None
-        
-        # Reset widget-controlled state directly in session_state
-        st.session_state['sidebar_log_view_toggle'] = False
-        st.session_state['show_advanced_search'] = False
-        st.session_state['show_import_data'] = False
-        st.session_state['apply_white_balance_toggle'] = False
-        st.session_state['show_R'] = True
-        st.session_state['show_G'] = True  
-        st.session_state['show_B'] = True
-        st.session_state['show_channel_mixer'] = False
+
     
-    def update_multiple(self, **kwargs) -> None:
-        """
-        Update multiple state values atomically.
-        
-        Provides efficient bulk updates while maintaining the same error
-        handling and widget conflict protection as individual updates.
-        
-        Args:
-            **kwargs: Key-value pairs of state attributes to update
-            
-        Example:
-            state.update_multiple(
-                selected_filters=['Filter1', 'Filter2'],
-                log_view=True,
-                target_profile=new_profile
-            )
-        """
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                st.session_state[key] = value
+
     
-    def get_raw_session_state(self) -> Dict[str, Any]:
-        """
-        Get direct access to session_state for debugging and inspection.
-        
-        Returns a copy of the current session_state contents, useful for
-        debugging state issues or understanding the complete application state.
-        
-        Returns:
-            Dictionary containing all current session_state key-value pairs
-            
-        Note:
-            This is primarily for debugging purposes. Normal application code
-            should use the dynamic attribute access provided by StateManager.
-        """
-        return dict(st.session_state)
+
 
 
 # ============================================================================
@@ -360,16 +265,4 @@ def get_state_manager() -> StateManager:
         _state_manager = StateManager()
     return _state_manager
 
-def reset_state_manager() -> None:
-    """
-    Reset the global StateManager instance.
-    
-    Primarily used for testing scenarios where a clean state is required
-    between test runs. Normal application use should not need this function.
-    
-    Warning:
-        This will destroy the current StateManager and all associated state.
-        Use with caution in production code.
-    """
-    global _state_manager
-    _state_manager = None
+

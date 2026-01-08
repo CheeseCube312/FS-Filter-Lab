@@ -6,7 +6,6 @@ including the main control panel with sliders for manual channel mixing control.
 The UI provides a 3x3 matrix of sliders for intuitive channel mixing control.
 """
 import streamlit as st
-import numpy as np
 from typing import Dict, Any, Optional
 
 from models.core import ChannelMixerSettings
@@ -182,19 +181,6 @@ def _render_compact_sliders(mixer_settings: ChannelMixerSettings) -> None:
     # Note: No manual sync needed - StateManager automatically builds mixer from session state
 
 
-def render_channel_mixer_toggle() -> bool:
-    """
-    Render channel mixer toggle button for sidebar.
-    
-    Returns:
-        True if channel mixer should be shown, False otherwise
-    """
-    return st.checkbox(
-        "Show Channel Mixer",
-        key="show_channel_mixer",
-        help="Open channel mixer panel for RGB manipulation"
-    )
-
 
 def render_compact_channel_mixer_status(mixer_settings: ChannelMixerSettings) -> None:
     """
@@ -213,22 +199,3 @@ def render_compact_channel_mixer_status(mixer_settings: ChannelMixerSettings) ->
         st.markdown("*Channel Mixer: Custom*")
 
 
-def validate_and_warn_mixer_settings(mixer_settings: ChannelMixerSettings) -> None:
-    """
-    Validate mixer settings and show warnings if needed.
-    Only shows critical warnings to avoid UI clutter.
-    
-    Args:
-        mixer_settings: Settings to validate
-    """
-    if not mixer_settings.enabled:
-        return
-        
-    matrix = mixer_settings.to_matrix()
-    
-    # Only show critical warnings
-    det = np.linalg.det(matrix)
-    if abs(det) < 1e-6:
-        st.error("Settings may cause color loss - try adjusting values")
-    elif np.any(np.abs(matrix) > 5.0):
-        st.warning("Extreme values may produce unusual results")

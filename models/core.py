@@ -9,20 +9,18 @@ Data Models:
 - TargetProfile: Stores target transmission profiles for comparison analysis
 - ReflectorSpectrum: Individual reflector spectral data
 - ReflectorCollection: Collection of reflector spectra
-- ApplicationState: Global application state management
+- ChannelMixerSettings: RGB channel mixing transformation settings
 
 Design Principles:
 - Uses dataclasses for clean, type-safe data structures
 - Leverages NumPy for efficient numerical operations
 - Maintains separation between data models and business logic
 - Provides utility methods for common operations
-
-Note: Some legacy classes are deprecated in favor of simpler Dict/np.ndarray
-structures for better performance and maintainability.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Union
 import numpy as np
+import pandas as pd
 
 # Import constants from the constants module
 from models.constants import INTERP_GRID, DEFAULT_RGB_VISIBILITY, DEFAULT_WB_GAINS
@@ -74,7 +72,7 @@ class FilterCollection:
     significantly improving performance for large filter collections.
     """
     filters: List[Filter]
-    df: Any  # Pandas DataFrame containing filter metadata
+    df: pd.DataFrame  # Pandas DataFrame containing filter metadata
     filter_matrix: np.ndarray  # Shape: (n_filters, n_wavelengths)
     extrapolated_masks: np.ndarray  # Shape: (n_filters, n_wavelengths), dtype=bool
     
@@ -95,31 +93,6 @@ class FilterCollection:
             List of formatted display names suitable for UI selection widgets
         """
         return [str(f) for f in self.filters]
-
-
-# Deprecated classes - kept for reference but not exported
-# These have been replaced by simpler Dict/np.ndarray structures
-
-# @dataclass
-# class QuantumEfficiency:
-#     """Camera quantum efficiency model - DEPRECATED: Use Dict[str, np.ndarray] directly."""
-#     brand: str
-#     model: str
-#     channels: Dict[str, np.ndarray]  # Dict of channel name to QE values
-#     
-#     def __str__(self) -> str:
-#         return f"{self.brand} {self.model}"
-
-
-# @dataclass
-# class Illuminant:
-#     """Light source illuminant model - DEPRECATED: Use np.ndarray with metadata dict directly."""
-#     name: str
-#     values: np.ndarray  # Illuminant values across the spectrum
-#     metadata: Dict[str, Any] = field(default_factory=dict)
-#     
-#     def __str__(self) -> str:
-#         return self.name
 
 
 @dataclass
@@ -197,13 +170,13 @@ class ChannelMixerSettings:
             [self.blue_r, self.blue_g, self.blue_b]    # Blue output weights
         ])
     
-    def from_dict(self, settings_dict: Dict[str, Any]) -> None:
+    def from_dict(self, settings_dict: Dict[str, Union[float, bool]]) -> None:
         """Update settings from dictionary (for preset loading)."""
         for key, value in settings_dict.items():
             if hasattr(self, key):
                 setattr(self, key, value)
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> Dict[str, Union[float, bool]]:
         """Convert settings to dictionary (for preset saving)."""
         return {
             'red_r': self.red_r, 'red_g': self.red_g, 'red_b': self.red_b,
@@ -244,80 +217,3 @@ class ReflectorCollection:
     """
     reflectors: List[ReflectorSpectrum]
     reflector_matrix: np.ndarray  # Shape: (n_reflectors, n_wavelengths)
-
-
-@dataclass
-class ApplicationState:
-    """
-    Global application state container for FS FilterLab.
-    
-    Manages all persistent application data including user selections,
-    computed results, and UI state. This class serves as a data container
-    while the StateManager handles session state integration.
-    
-    Filter State:
-        filter_collection: Available filters loaded from data files
-        selected_filters: Currently selected filter display names
-        filter_multipliers: Stack count for each selected filter
-    
-    Sensor and Illumination:
-        current_qe: Camera quantum efficiency data by RGB channel
-        selected_illuminant: Current illuminant spectrum and metadata
-    
-    Analysis:
-        target_profile: Reference transmission profile for comparison
-        combined_transmission: Computed result from selected filter stack
-    
-    Display Options:
-        log_view: Toggle for logarithmic transmission scale
-        rgb_channels_visibility: Show/hide individual RGB channels
-        white_balance_gains: Color correction multipliers
-        apply_white_balance: Enable white balance correction
-    
-    UI State:
-        show_advanced_search: Toggle advanced filter search interface
-        show_import_data: Toggle data import interface
-        last_export: Metadata from most recent report generation
-    """
-    # Filter data
-    filter_collection: Optional[FilterCollection] = None
-    selected_filters: List[str] = field(default_factory=list)
-    filter_multipliers: Dict[str, int] = field(default_factory=dict)
-    
-    # QE and illuminant data
-    current_qe: Optional[Dict[str, np.ndarray]] = None
-    selected_illuminant: Optional[Dict[str, Any]] = None
-    
-    # Target profile
-    target_profile: Optional[TargetProfile] = None
-    
-    # Display options
-    log_view: bool = False
-    rgb_channels_visibility: Dict[str, bool] = field(default_factory=lambda: DEFAULT_RGB_VISIBILITY.copy())
-    
-    # Computed results
-    combined_transmission: Optional[np.ndarray] = None
-    white_balance_gains: Dict[str, float] = field(default_factory=lambda: DEFAULT_WB_GAINS.copy())
-    apply_white_balance: bool = False
-    
-    # Export/report state
-    last_export: Dict[str, Any] = field(default_factory=dict)
-    
-    # Advanced search state
-    show_advanced_search: bool = False
-    
-    # Import state
-    show_import_data: bool = False
-    
-    def reset(self):
-        """Reset the application state to defaults."""
-        self.selected_filters = []
-        self.filter_multipliers = {}
-        self.combined_transmission = None
-        self.white_balance_gains = DEFAULT_WB_GAINS.copy()
-        self.apply_white_balance = False
-        self.log_view = False
-        self.rgb_channels_visibility = DEFAULT_RGB_VISIBILITY.copy()
-        self.last_export = {}
-        self.show_advanced_search = False
-        self.show_import_data = False

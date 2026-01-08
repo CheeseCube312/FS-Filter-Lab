@@ -11,7 +11,17 @@ from typing import Dict, List, Optional, Any, Callable
 
 # Local imports
 from models.core import TargetProfile
-from models.constants import UI_INFO_MESSAGES, UI_WARNING_MESSAGES, UI_CHART_TITLES, UI_SECTIONS, UI_LABELS
+from models.constants import UI_INFO_MESSAGES, UI_WARNING_MESSAGES, UI_CHART_TITLES, UI_SECTIONS, UI_LABELS, INTERP_GRID
+from views.ui_utils import show_warning_message, show_info_message, format_error_message
+from services.calculations import (
+    format_transmission_metrics, format_deviation_metrics, 
+    calculate_transmission_deviation_metrics, format_white_balance_data,
+    compute_selected_filter_indices
+)
+from services.visualization import (
+    create_illuminant_figure, create_leaf_reflectance_figure, 
+    create_single_reflectance_figure
+)
 
 # ============================================================================
 # CHART RENDERING UTILITIES
@@ -44,42 +54,7 @@ def render_chart(
     _apply_chart_layout_and_display(fig, width, height, description)
 
 
-def render_expandable_chart(
-    fig: Any,
-    title: str,
-    expanded: bool = False,
-    width: str = 'stretch',
-    height: Optional[int] = None,
-    description: Optional[str] = None
-) -> None:
-    """Render a chart within an expandable section."""
-    with st.expander(title, expanded=expanded):
-        _apply_chart_layout_and_display(fig, width, height, description)
 
-
-def render_chart_with_controls(
-    fig: Any,
-    title: Optional[str] = None,
-    control_elements: Dict[str, Callable] = None,
-    width: str = 'stretch',
-    height: Optional[int] = None,
-    description: Optional[str] = None
-) -> Dict[str, Any]:
-    """Render a chart with control elements."""
-    if title:
-        st.subheader(title)
-    
-    # Handle controls
-    control_values = {}
-    if control_elements:
-        cols = st.columns(len(control_elements))
-        for i, (name, render_fn) in enumerate(control_elements.items()):
-            with cols[i]:
-                control_values[name] = render_fn()
-    
-    _apply_chart_layout_and_display(fig, width, height, description)
-    
-    return control_values
 
 # ============================================================================
 # DATA DISPLAY COMPONENTS
@@ -99,13 +74,21 @@ def transmission_metrics(
     valid = ~np.isnan(trans)
     if not valid.any():
         from views.ui_utils import show_warning_message
-        show_warning_message(f"Cannot compute average transmission for {label}: insufficient data.")
+        message = format_error_message('compute_failed', 
+                                     metric='average transmission', 
+                                     item=label, 
+                                     reason='insufficient data')
+        show_warning_message(message)
         return
     
     # Check if we have sensor QE data
     if sensor_qe is None:
         from views.ui_utils import show_warning_message
-        show_warning_message(f"Cannot compute light loss for {label}: no sensor QE data.")
+        message = format_error_message('compute_failed', 
+                                     metric='light loss', 
+                                     item=label, 
+                                     reason='no sensor QE data')
+        show_warning_message(message)
         return
     
     # Calculate effective stops with illuminant weighting
@@ -141,7 +124,6 @@ def deviation_metrics(
     
     if not metrics:
         if target_profile:
-            from views.ui_utils import show_info_message
             show_info_message(UI_INFO_MESSAGES['no_target_overlap'])
         return    # Format metrics for display
     formatted = format_deviation_metrics(metrics, target_profile)
@@ -179,7 +161,6 @@ def white_balance_display(
 
 def raw_qe_and_illuminant(app_state, data) -> None:
     """Display raw quantum efficiency and illuminant data charts."""
-    """Display reflectance and illuminant curves in Streamlit expander."""
     from models.constants import INTERP_GRID
     from services.visualization import create_illuminant_figure, create_leaf_reflectance_figure, create_single_reflectance_figure
     
@@ -202,7 +183,6 @@ def raw_qe_and_illuminant(app_state, data) -> None:
             if fig_leaves is not None:
                 render_chart(fig_leaves, UI_CHART_TITLES['leaf_reflectance'])
             else:
-                from views.ui_utils import show_info_message
                 show_info_message(UI_INFO_MESSAGES['leaf_data_required'])
         
         # Show selected reflectance spectrum if available
@@ -238,19 +218,16 @@ def raw_qe_and_illuminant(app_state, data) -> None:
                 f"Illuminant: {app_state.illuminant_name}"
             )
         else:
-            from views.ui_utils import show_info_message
             show_info_message(UI_INFO_MESSAGES['no_illuminant'])
 
 
 def filter_response_display(fig) -> None:
     """Display filter response chart in an expandable section."""
-    """Display filter response plot."""
     render_chart(fig, title=UI_CHART_TITLES['combined_filter_response'])
 
 
 def sensor_response_display(fig) -> None:
     """Display sensor response chart in an expandable section."""
-    """Display sensor response plot with white balance toggle."""
     
     # White balance toggle is widget-controlled and accessed through app_state
     st.checkbox(
@@ -269,13 +246,6 @@ def render_main_content(app_state, data):
     Args:
         app_state: Application state manager
         data: Application data dictionary containing collections and calculations
-    """
-    """
-    Render the main content area of the application.
-    
-    Args:
-        app_state: Application state object (now using unified StateManager under the hood)
-        data: Dictionary containing loaded application data
     """
     import streamlit as st
     
@@ -431,7 +401,7 @@ def _render_vegetation_preview(app_state, trans_interp, reflector_collection) ->
     """Render vegetation color preview and return pixels for normalization."""
     import streamlit as st
     from services.calculations import compute_reflector_preview_colors
-    from views.sidebar import reflector_preview
+    from views.ui_utils import reflector_preview
     from views.ui_utils import show_warning_message
     
     reflector_matrix = reflector_collection.reflector_matrix
@@ -458,7 +428,7 @@ def _render_single_reflector_preview(app_state, trans_interp, reflector_collecti
     import streamlit as st
     
     from services.calculations import compute_single_reflector_color
-    from views.sidebar import single_reflector_preview
+    from views.ui_utils import single_reflector_preview
     from views.ui_utils import show_info_message
     
     reflector_matrix = reflector_collection.reflector_matrix

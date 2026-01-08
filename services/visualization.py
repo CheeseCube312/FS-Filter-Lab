@@ -26,7 +26,7 @@ from models.core import ChannelMixerSettings
 from models.constants import (
     CHART_HEIGHTS, CHART_LINE_STYLES, CHART_COLORS, PLOT_LAYOUT, 
     SENSOR_RESPONSE_DEFAULTS, MPL_STYLE_CONFIG, REPORT_CONFIG,
-    ReportConfig, FilterData, ComputationFunctions, SensorData, ChartConfig
+    ReportConfig, FilterData, ComputationFunctions, SensorData
 )
 
 # =============================================================================
@@ -68,8 +68,8 @@ def _calculate_channel_responses(
         if not visible_channels.get(channel, True):
             continue
             
-        # Calculate response
-        response = transmission * qe_curve
+        # Calculate response and convert to percentage scale for display
+        response = transmission * qe_curve * 100
         
         # Apply white balance if requested
         if apply_white_balance:
@@ -315,7 +315,7 @@ def _add_sensor_response_section(ax4, current_qe: Dict[str, np.ndarray], wb: Dic
         if qe is None:
             continue
         gains = wb.get(ch, 1.0)
-        resp = np.nan_to_num(active_trans * (qe / 100)) * 100 / gains
+        resp = np.nan_to_num(active_trans * qe / gains) * 100
         ax4.plot(interp_grid, resp, label=f"{ch} Channel", lw=REPORT_CONFIG['channel_line_width'], color=COLOR_MAP[ch])
         maxresp = max(maxresp, np.nanmax(resp))
         stack[ch] = resp
@@ -357,7 +357,7 @@ def _save_report_to_file(fig, buf: io.BytesIO, fname: str, camera_name: str, ill
     with open(output_path, "wb") as f:
         f.write(buf.getvalue())
 
-    st.success(f"✔️ Report generated: {fname}")
+    st.success(f"Report generated: {fname}")
     return {'bytes': buf.getvalue(), 'name': fname}
 
 
@@ -576,23 +576,6 @@ def apply_plotly_default_style(fig, title, x_title="Wavelength (nm)", y_title="R
     )
     return fig
 
-def apply_chart_config_style(fig, config: ChartConfig):
-    """Apply styling to Plotly figures using ChartConfig data class."""
-    fig.update_layout(
-        title=config.title,
-        xaxis_title=config.x_title,
-        yaxis_title=config.y_title,
-        template=config.template,
-        height=config.height or CHART_HEIGHTS['standard_plot'],
-        hovermode=config.hovermode,
-        showlegend=config.show_legend
-    )
-    
-    if config.log_scale:
-        fig.update_yaxes(type="log")
-    
-    return fig
-
 
 def add_filter_curve_to_plotly(fig, x, y, mask, label, color):
     """
@@ -709,7 +692,7 @@ def _update_response_plot_layout(
     plot_height = CHART_HEIGHTS['plot_with_spectrum'] if has_spectrum_strip else CHART_HEIGHTS['standard_plot']
     
     # Apply consistent styling
-    apply_plotly_default_style(fig, title, height=plot_height)
+    apply_plotly_default_style(fig, title, y_title="Response (%)", height=plot_height)
 
 
 def create_filter_response_plot(
@@ -733,14 +716,14 @@ def create_filter_response_plot(
         name = filter_names[filter_index]
         color = filter_hex_colors[filter_index]
         
-        # Convert to log scale if needed
-        y_data = -np.log2(np.maximum(transmission, 1e-6)) if log_stops else transmission
+        # Convert to log scale or percentage scale for display
+        y_data = -np.log2(np.maximum(transmission, 1e-6)) if log_stops else transmission * 100
         
         add_filter_curve_to_plotly(fig, interp_grid, y_data, mask, name, color)
     
     # Add combined transmission if available
     if combined is not None:
-        y_data = -np.log2(np.maximum(combined, 1e-6)) if log_stops else combined
+        y_data = -np.log2(np.maximum(combined, 1e-6)) if log_stops else combined * 100
         fig.add_trace(go.Scatter(
             x=interp_grid,
             y=y_data,
@@ -755,8 +738,11 @@ def create_filter_response_plot(
         valid_mask = target_profile.valid
         target_values = target_profile.values
         if log_stops:
-            # Convert percentage to fraction, then to stops
-            target_values = -np.log2(np.maximum(target_values / 100.0, 1e-6))
+            # Convert fraction to stops
+            target_values = -np.log2(np.maximum(target_values, 1e-6))
+        else:
+            # Convert to percentage scale for display
+            target_values = target_values * 100
             
         fig.add_trace(go.Scatter(
             x=interp_grid[valid_mask],
@@ -768,7 +754,7 @@ def create_filter_response_plot(
         ))
     
     # Update layout
-    y_title = "Light Loss (stops)" if log_stops else "Transmission"
+    y_title = 'Transmission (stops)' if log_stops else 'Transmission (%)'
     fig = apply_plotly_default_style(fig, "Filter Response", y_title=y_title)
     
     # Invert y-axis for log view (high transmission = low stops = bottom of plot)
@@ -933,8 +919,6 @@ def create_qe_figure(
         visible_channels={f'{k} QE': v for k, v in visible_channels.items()},
         height=height
     )
-    
-    return fig
 
 
 def create_illuminant_figure(
@@ -1033,6 +1017,7 @@ def create_sparkline_plot(
     fig = go.Figure()
     
     # Convert transmission values to percentage for display
+    # Convert internal 0-1 scale to 0-100% for display
     y_data_pct = y_data * 100
     
     fig.add_trace(go.Scatter(

@@ -49,54 +49,39 @@ def safe_float(val):
         return np.nan
 
 
-def validate_wavelength_range(wavelengths: np.ndarray, data_type: str = "data") -> Tuple[bool, str]:
+def validate_wavelength_data(wavelengths, values, value_type="spectral values"):
     """
-    Validate wavelength range for spectral data.
+    Common validation for wavelength and spectral data.
     
     Args:
-        wavelengths: Array of wavelength values
-        data_type: Type of data being validated (for error messages)
+        wavelengths: Array of wavelength values  
+        values: Array of spectral values
+        value_type: Description of value type for error messages
         
     Returns:
         Tuple of (is_valid, error_message)
     """
+    # Check for empty data
     if wavelengths.size == 0:
-        return False, f"Wavelength column is empty for {data_type}."
-        
-    min_wl, max_wl = wavelengths.min(), wavelengths.max()
+        return False, "Wavelength column (first column) is empty or contains no valid numbers."
     
+    if values.size == 0:
+        return False, f"{value_type.title()} column is empty or contains no valid numbers."
+    
+    # Check size match
+    if wavelengths.size != values.size:
+        return False, f"Wavelength and {value_type} columns have different lengths ({wavelengths.size} vs {values.size})."
+    
+    # Check wavelength range validity
+    min_wl, max_wl = wavelengths.min(), wavelengths.max()
     if min_wl < 200 or max_wl > 2000:
         return False, f"Wavelength range ({min_wl:.1f}-{max_wl:.1f} nm) seems invalid. Expected 200-2000 nm."
         
     if max_wl - min_wl < 50:
         return False, f"Wavelength range too narrow ({min_wl:.1f}-{max_wl:.1f} nm). Need at least 50nm range."
-        
-    return True, ""
-
-
-def validate_spectral_values(values: np.ndarray, value_type: str, min_val: float = 0, max_val: float = None) -> Tuple[bool, str]:
-    """
-    Validate spectral values (transmission, reflectance, QE, etc.).
     
-    Args:
-        values: Array of spectral values
-        value_type: Type of values being validated
-        min_val: Minimum allowed value
-        max_val: Maximum allowed value (None for no limit)
-        
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    if values.size == 0:
-        return False, f"{value_type} column is empty or contains no valid numbers."
-        
-    if values.min() < min_val:
-        return False, f"{value_type} values cannot be below {min_val} (found: {values.min():.3f})."
-        
-    if max_val is not None and values.max() > max_val:
-        return False, f"{value_type} values seem too high (max: {values.max():.3f}). Expected 0-{max_val}."
-        
     return True, ""
+
 
 
 def safe_file_save(df: pd.DataFrame, file_path: Path, data_type: str) -> Tuple[bool, str]:

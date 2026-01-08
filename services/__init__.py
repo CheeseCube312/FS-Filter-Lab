@@ -103,7 +103,6 @@ from services.visualization import (
 
 # Import application operations
 from services.app_operations import (
-    process_reflector_data,
     generate_application_report,
     generate_full_report,
     rebuild_application_cache,

@@ -18,8 +18,5 @@ from models.core import (
     
     # Reflector Models
     ReflectorSpectrum,
-    ReflectorCollection,
-    
-    # Application State
-    ApplicationState
+    ReflectorCollection
 )

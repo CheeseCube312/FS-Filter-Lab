@@ -9,17 +9,22 @@ This module provides all mathematical computation functions for:
 - White balance calculations
 - Deviation analysis
 """
+# Standard library imports
+from pathlib import Path
+
 # Third-party imports
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
 # Local imports
 from models.constants import (
-    EPSILON, DEFAULT_WB_GAINS, DATA_FOLDERS, METADATA_FIELDS, VEGETATION_PREVIEW
+    EPSILON, DEFAULT_WB_GAINS, DATA_FOLDERS, METADATA_FIELDS, VEGETATION_PREVIEW, INTERP_GRID
 )
 from models.core import FilterCollection, TargetProfile, ChannelMixerSettings, ReflectorCollection
-from models import INTERP_GRID
 from services.channel_mixer import apply_channel_mixing_to_responses, apply_channel_mixing_to_colors
+
+# Constants for calculations
+MIN_RGB_VALUE = 1/255  # Minimum RGB value to prevent complete black pixels
 
 
 # ============================================================================
@@ -30,12 +35,15 @@ def compute_combined_transmission(transmission_values: List[np.ndarray], combine
     """
     Compute combined transmission from multiple filter transmissions.
     
-    Args:
-        transmission_values: List of transmission arrays
-        combine: Whether to combine the transmissions (multiply them)
+    All transmission values are expected to be in fractional scale (0-1).
+    Filter combination uses natural multiplication which preserves this scale.
     
+    Args:
+        transmission_values: List of transmission arrays (each 0-1 scale)
+        combine: Whether to combine the transmissions (multiply them)
+
     Returns:
-        Combined transmission or first transmission if not combining
+        Combined transmission in fractional scale (0-1)
     """
     if not transmission_values:
         return np.ones_like(INTERP_GRID)
@@ -165,9 +173,9 @@ def compute_effective_stops(
     Compute effective stops from transmission, sensor QE, and illuminant.
     
     Args:
-        transmission: Transmission values (0-1)
-        sensor_qe: Sensor quantum efficiency values (%)
-        illuminant: Illuminant spectrum (optional, defaults to uniform)
+        transmission: Transmission values (0-1 fractional scale)
+        sensor_qe: Sensor quantum efficiency values (0-1 fractional scale)
+        illuminant: Illuminant spectrum (arbitrary units, optional)
     
     Returns:
         Tuple of (avg_transmission, effective_stops)
@@ -243,10 +251,10 @@ def calculate_transmission_deviation_metrics(
         return {}
 
     if log_stops:
-        dev = np.log2(transmission[overlap]) - np.log2(target_profile.values[overlap] / 100)
+        dev = np.log2(transmission[overlap]) - np.log2(target_profile.values[overlap])
         unit = 'stops'
     else:
-        dev = transmission[overlap] * 100 - target_profile.values[overlap]
+        dev = transmission[overlap] * 100 - target_profile.values[overlap] * 100
         unit = '%'
 
     mae = np.mean(np.abs(dev))
@@ -301,11 +309,10 @@ def compute_rgb_response(
     responses = {}
     rgb_stack = []
     
-    # Get sample array size
-    sample_size = next(iter(quantum_efficiency.values())).shape if quantum_efficiency else 0
-    
-    # Check for valid transmission data
-    if not is_valid_transmission(transmission):
+    # Check for valid transmission data - early exit if invalid
+    if not is_valid_transmission(transmission) or not quantum_efficiency:
+        # Return zero arrays with correct dimensions
+        sample_size = len(next(iter(quantum_efficiency.values()))) if quantum_efficiency else len(INTERP_GRID)
         zero_array = np.zeros(sample_size)
         for channel in ['R', 'G', 'B']:
             responses[channel] = zero_array
@@ -315,27 +322,19 @@ def compute_rgb_response(
     # Process each color channel
     max_response = 0.0
     for channel in ['R', 'G', 'B']:
-        # Get quantum efficiency for this channel
         qe_curve = quantum_efficiency.get(channel)
         
-        # Skip if no QE data or size mismatch
+        # Create zero response if no QE data or size mismatch
         if qe_curve is None or len(qe_curve) != len(transmission):
             responses[channel] = np.zeros_like(transmission)
-            rgb_stack.append(responses[channel])
-            continue
-
-        # Get white balance gain, with safety check
-        gain = max(white_balance_gains.get(channel, 1.0), EPSILON)
-        
-        # Calculate weighted response
-        weighted = np.nan_to_num(transmission * (qe_curve / 100)) / gain * 100
-        max_response = max(max_response, np.nanmax(weighted))
-        
-        # Apply channel visibility
-        if visible_channels.get(channel, True):
-            responses[channel] = weighted
         else:
-            responses[channel] = np.zeros_like(weighted)
+            # Calculate weighted response with white balance
+            gain = max(white_balance_gains.get(channel, 1.0), EPSILON)
+            weighted = np.nan_to_num(transmission * qe_curve) / gain * 100
+            max_response = max(max_response, np.nanmax(weighted))
+            
+            # Apply channel visibility
+            responses[channel] = weighted if visible_channels.get(channel, True) else np.zeros_like(weighted)
             
         rgb_stack.append(responses[channel])
     
@@ -353,7 +352,7 @@ def compute_rgb_response(
         rgb_matrix = rgb_matrix / max_val
         
     # Clip to valid range
-    rgb_matrix = np.clip(rgb_matrix, 1/255, 1.0)
+    rgb_matrix = np.clip(rgb_matrix, MIN_RGB_VALUE, 1.0)
 
     return responses, rgb_matrix, max_response
 
@@ -394,13 +393,17 @@ def compute_white_balance_gains(
         
         # Calculate total response for this channel
         rgb_resp[ch] = np.nansum(
-            transmission[valid] * (qe_curve[valid] / 100) * illuminant[valid]
+            transmission[valid] * qe_curve[valid] * illuminant[valid]
         )
 
     # Normalize gains using green as reference
     g_response = rgb_resp.get('G', np.nan)
     if not np.isnan(g_response) and g_response > EPSILON:
-        return {ch: rgb_resp[ch] / g_response for ch in ['R', 'G', 'B']}
+        # Ensure all responses are valid before creating the ratio dictionary
+        return {
+            ch: rgb_resp.get(ch, 0.0) / g_response if not np.isnan(rgb_resp.get(ch, 0.0)) else 1.0
+            for ch in ['R', 'G', 'B']
+        }
     
     # Fall back to defaults if we can't normalize
     return DEFAULT_WB_GAINS.copy()
@@ -457,7 +460,7 @@ def compute_reflector_color(
         rgb_resp[ch] = np.nansum(
             reflector[valid] * 
             transmission[valid] * 
-            (qe_curve[valid] / 100.0) * 
+            qe_curve[valid] * 
             illuminant[valid]
         )
 
@@ -490,7 +493,6 @@ def find_vegetation_preview_reflectors(reflector_collection: ReflectorCollection
     if not reflector_collection or not reflector_collection.reflectors:
         return None
     
-    from pathlib import Path
     from services.data import parse_comment_headers
     
     # Map default numbers to reflector indices
@@ -519,7 +521,7 @@ def find_vegetation_preview_reflectors(reflector_collection: ReflectorCollection
                         if reflector.name.strip() == display_name:
                             default_mapping[default_num] = i
                             break
-        except (ValueError, IndexError, Exception):
+        except (ValueError, IndexError, KeyError):
             continue
     
     # Ensure we have all required default reflectors
