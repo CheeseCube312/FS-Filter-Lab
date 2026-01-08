@@ -14,7 +14,9 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
 # Local imports
-from models.constants import EPSILON, DEFAULT_WB_GAINS, VEGETATION_PREVIEW_FILES
+from models.constants import (
+    EPSILON, DEFAULT_WB_GAINS, DATA_FOLDERS, METADATA_FIELDS, VEGETATION_PREVIEW
+)
 from models.core import FilterCollection, TargetProfile, ChannelMixerSettings, ReflectorCollection
 from models import INTERP_GRID
 from services.channel_mixer import apply_channel_mixing_to_responses, apply_channel_mixing_to_colors
@@ -477,47 +479,56 @@ def compute_reflector_color(
 
 def find_vegetation_preview_reflectors(reflector_collection: ReflectorCollection) -> Optional[List[int]]:
     """
-    Find the exact 4 hardcoded leaf reflectors for vegetation preview.
-    
-    Returns indices of these specific files in order:
-    1. Leaf_1_reflectance_extrapolated_1100.tsv
-    2. Leaf_2_reflectance_extrapolated_1100.tsv 
-    3. Leaf_3_reflectance_extrapolated_1100.tsv
-    4. Leaf_4_reflectance_extrapolated_1100.tsv
+    Find reflectors with IsDefault metadata for vegetation preview.
     
     Args:
         reflector_collection: The reflector collection to search
         
     Returns:
-        List of 4 indices if all files found, None if any are missing
+        List of 4 indices ordered by default number (1,2,3,4) if all found, None otherwise
     """
-    if not reflector_collection or not hasattr(reflector_collection, 'reflectors'):
+    if not reflector_collection or not reflector_collection.reflectors:
+        return None
+    
+    from pathlib import Path
+    from services.data import parse_comment_headers
+    
+    # Map default numbers to reflector indices
+    default_mapping = {}
+    
+    # Search reflector files for IsDefault metadata
+    reflector_folder = Path(DATA_FOLDERS['reflectors'])
+    if not reflector_folder.exists():
         return None
         
-    # Use filenames from constants (without .tsv extension)
-    required_names = VEGETATION_PREVIEW_FILES
-    
-    indices = []
-    
-    # Find each required reflector by exact name match
-    for required_name in required_names:
-        found_idx = None
-        
-        for i, reflector in enumerate(reflector_collection.reflectors):
-            # Check if reflector name matches exactly (handles both with/without .tsv)
-            if (reflector.name == required_name or 
-                reflector.name == f"{required_name}.tsv" or
-                reflector.name.replace('.tsv', '') == required_name):
-                found_idx = i
-                break
-                
-        if found_idx is None:
-            # Missing required file - return None to indicate failure
-            return None
+    for tsv_file in reflector_folder.glob("**/*.tsv"):
+        try:
+            metadata, _ = parse_comment_headers(tsv_file)
             
-        indices.append(found_idx)
+            # Check for IsDefault metadata
+            if METADATA_FIELDS['is_default'] in metadata:
+                default_value = metadata[METADATA_FIELDS['is_default']].strip()
+                if default_value.startswith(VEGETATION_PREVIEW['default_prefix']):
+                    default_num = int(default_value.split()[-1])
+                    
+                    # Get the display name from metadata
+                    display_name = metadata.get(METADATA_FIELDS['name'], tsv_file.stem).strip()
+                    
+                    # Find matching reflector in collection
+                    for i, reflector in enumerate(reflector_collection.reflectors):
+                        if reflector.name.strip() == display_name:
+                            default_mapping[default_num] = i
+                            break
+        except (ValueError, IndexError, Exception):
+            continue
     
-    return indices
+    # Ensure we have all required default reflectors
+    required_numbers = VEGETATION_PREVIEW['default_numbers']
+    if len(default_mapping) != VEGETATION_PREVIEW['required_count'] or not all(i in default_mapping for i in required_numbers):
+        return None
+    
+    # Return indices in order (Default 1, Default 2, Default 3, Default 4)
+    return [default_mapping[i] for i in required_numbers]
 
 
 def compute_reflector_preview_colors(
@@ -529,13 +540,7 @@ def compute_reflector_preview_colors(
     channel_mixer: Optional[ChannelMixerSettings] = None
 ) -> Optional[np.ndarray]:
     """
-    Compute colors for vegetation preview using hardcoded leaf files only.
-    
-    Uses these exact files in a 2x2 grid:
-    - Leaf_1_reflectance_extrapolated_1100.tsv
-    - Leaf_2_reflectance_extrapolated_1100.tsv
-    - Leaf_3_reflectance_extrapolated_1100.tsv 
-    - Leaf_4_reflectance_extrapolated_1100.tsv
+    Compute colors for vegetation preview using reflectors with IsDefault metadata.
     
     Args:
         reflector_matrix: Matrix of reflector data
@@ -543,22 +548,20 @@ def compute_reflector_preview_colors(
         qe_data: Quantum efficiency data
         illuminant: Illuminant curve
         reflector_collection: ReflectorCollection with reflector names
-        channel_mixer: Optional channel mixer settings for color manipulation
+        channel_mixer: Optional channel mixer settings
         
     Returns:
-        Array of RGB pixel values or None if hardcoded files not found
+        Array of RGB pixel values in 2x2 grid or None if default files not found
     """
-    # Find the exact hardcoded leaf files
     if reflector_collection is None:
         return None
         
     leaf_indices = find_vegetation_preview_reflectors(reflector_collection)
     
     if leaf_indices is None:
-        # Required leaf files not found - return None to show warning
         return None
     
-    # Create a 2x2 grid using only the hardcoded leaf files
+    # Create a 2x2 grid using the default reflectors
     pixels = np.zeros((2, 2, 3))
     for i in range(2):
         for j in range(2):

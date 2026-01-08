@@ -28,9 +28,78 @@ import numpy as np
 
 # Standard wavelength grid for all spectral data interpolation
 INTERP_GRID = np.arange(300, 1101, 1)  # 300–1100 nm, step 1 nm (standard optical range)
+WAVELENGTH_RANGE = (300, 1100)  # Min and max wavelengths for the standard grid
 
 # Mathematical constants for numerical stability
 EPSILON = 1e-6  # Small value to prevent division by zero and log domain errors
+
+# =============================================================================
+# DATA FOLDER STRUCTURE
+# =============================================================================
+
+# Data directory paths - centralized for consistency
+DATA_FOLDERS = {
+    'filters': "data/filters_data",
+    'qe': "data/QE_data", 
+    'illuminants': "data/illuminants",
+    'reflectors': "data/reflectors"
+}
+
+# File extensions used throughout the application
+FILE_EXTENSIONS = {
+    'data': '.tsv',      # Tab-separated values for all spectral data
+    'image': '.png',     # Portable Network Graphics for chart exports
+    'export': '.tsv'     # Export format for processed data
+}
+
+# =============================================================================
+# TSV FILE STRUCTURE CONSTANTS
+# =============================================================================
+
+# Standard column names used in TSV files
+TSV_COLUMNS = {
+    'wavelength': 'Wavelength',
+    'transmittance': 'Transmittance', 
+    'reflectance': 'Reflectance',
+    'filter_number': 'Filter Number',
+    'filter_name': 'Name',
+    'manufacturer': 'Manufacturer',
+    'hex_color': 'hex_color'
+}
+
+# Metadata field names used in comment-based TSV files (# key\tvalue format)
+METADATA_FIELDS = {
+    'name': 'Name',                    # Display name for the spectrum
+    'is_default': 'IsDefault',         # Vegetation preview default marker
+    'name_for_search': 'name_for_search',  # User-selected naming field
+    'species': 'species',              # Species name (ECOSIS data)
+    'sample_type': 'sample_type',      # Sample type classification
+    'collector': 'collector',          # Data collector information
+    'package_title': 'Package Title'   # ECOSIS package title
+}
+
+# =============================================================================
+# VEGETATION PREVIEW CONFIGURATION
+# =============================================================================
+
+# Settings for the vegetation color preview functionality
+VEGETATION_PREVIEW = {
+    'required_count': 4,          # Number of default reflectors needed (2x2 grid)
+    'grid_size': (2, 2),          # Display grid dimensions
+    'default_prefix': 'Default ', # Prefix for IsDefault metadata values
+    'default_numbers': [1, 2, 3, 4]  # Required default numbers
+}
+
+# =============================================================================
+# SPECTRAL DATA PROCESSING CONSTANTS
+# =============================================================================
+
+# Configuration for spectral data validation and processing
+SPECTRAL_CONFIG = {
+    'min_data_points': 2,          # Minimum valid data points required
+    'normalization_threshold': 1.5, # Values above this treated as percentages
+    'precision_decimals': 3         # Decimal places for processed values
+}
 
 # =============================================================================
 # APPLICATION DEFAULTS
@@ -89,30 +158,18 @@ CHANNEL_MIXER_RANGE = (-2.0, 2.0)  # Slider range for mixing coefficients
 CHANNEL_MIXER_STEP = 0.01           # Step size for sliders
 
 # =============================================================================
-# VEGETATION PREVIEW CONFIGURATION  
-# =============================================================================
-
-# Required reflector names for vegetation preview (2x2 grid display)
-VEGETATION_PREVIEW_FILES = [
-    "Leaf 1",    # Top-left quadrant
-    "Leaf 2",    # Top-right quadrant
-    "Leaf 3",    # Bottom-left quadrant
-    "Leaf 4"     # Bottom-right quadrant
-]
-
-# =============================================================================
 # USER INTERFACE TEXT CONSTANTS
 # =============================================================================
 
-# Button text with emoji icons
+# Button text
 UI_BUTTONS = {
-    'apply': "🔄 Apply",
-    'done': "✅ Done", 
-    'cancel': "✖ Cancel",
-    'close_importers': "✖️ Close Importers",
-    'rebuild_cache': "🔄 Rebuild Cache",
-    'csv_importers': "📊 WebPlotDigitizer .csv importers",
-    'generate_full_report': "📊 Generate Full Report",
+    'apply': "Apply",
+    'done': "Done",
+    'cancel': "Cancel",
+    'close_importers': "Close Import Data",
+    'rebuild_cache': "Rebuild Cache",
+    'csv_importers': "Import Data (CSV/ECOSIS)",
+    'generate_full_report': "Generate Full Report",
 }
 
 # Main section and panel titles
@@ -145,31 +202,31 @@ UI_LABELS = {
 
 # User feedback messages
 UI_INFO_MESSAGES = {
-    'no_target_overlap': "ℹ️ No valid overlap with target for deviation calculation.",
-    'leaf_data_required': "ℹ️ Leaf reflectance data requires files named: Leaf 1, Leaf 2, Leaf 3, Leaf 4",
-    'no_illuminant': "ℹ️ No illuminant loaded.",
+    'no_target_overlap': "No valid overlap with target for deviation calculation.",
+    'leaf_data_required': "Leaf reflectance data requires files named: Leaf 1, Leaf 2, Leaf 3, Leaf 4",
+    'no_illuminant': "No illuminant loaded.",
     'no_reflectors': "No reflectance spectra found.",
     'qe_illuminant_required': "Select a QE & illuminant profile to compute white balance.",
     'color_compute_failed': "Unable to compute color for selected surface"
 }
 
 UI_WARNING_MESSAGES = {
-    'no_illuminants': "⚠️ No illuminants found.",
-    'invalid_hex_colors': "⚠ Found {count} filters with invalid hex color codes:",
+    'no_illuminants': "No illuminants found.",
+    'invalid_hex_colors': "Found {count} filters with invalid hex color codes:",
     'incomplete_reflector_data': "Some reflector data appears incomplete. Check data files.",
     'vegetation_preview_required': (
-        "⚠️ Vegetation Color Preview requires these exact reflector names:\n"
-        "• Leaf 1\n"
-        "• Leaf 2\n" 
-        "• Leaf 3\n"
-        "• Leaf 4\n"
-        "Make sure the TSV files have a 'Name' column with these exact values."
+        "Vegetation Color Preview requires 4 reflector files with IsDefault metadata:\n"
+        "- File with #IsDefault\tDefault 1\n"
+        "- File with #IsDefault\tDefault 2\n"
+        "- File with #IsDefault\tDefault 3\n"
+        "- File with #IsDefault\tDefault 4\n"
+        "Make sure the TSV files have IsDefault metadata with these exact values."
     )
 }
 
 UI_SUCCESS_MESSAGES = {
-    'report_generated': "✅ Report generated successfully!",
-    'cache_rebuilt': "✅ Cache rebuilt successfully! Reloading application..."
+    'report_generated': "Report generated successfully!",
+    'cache_rebuilt': "Cache rebuilt successfully! Reloading application..."
 }
 
 # Tooltip and help text

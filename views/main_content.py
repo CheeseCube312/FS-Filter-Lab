@@ -429,6 +429,7 @@ def _render_sensor_response_plot(app_state, trans_interp, wb_gains) -> None:
 
 def _render_vegetation_preview(app_state, trans_interp, reflector_collection) -> Optional[np.ndarray]:
     """Render vegetation color preview and return pixels for normalization."""
+    import streamlit as st
     from services.calculations import compute_reflector_preview_colors
     from views.sidebar import reflector_preview
     from views.ui_utils import show_warning_message

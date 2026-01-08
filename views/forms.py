@@ -272,7 +272,7 @@ def import_data_form() -> None:
     st.subheader("Import Data")
     
     # Create tabs for different import types
-    tab1, tab2, tab3, tab4 = st.tabs(["Filters", "Illuminants", "Camera QE", "Reflectance"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Filters", "Illuminants", "Camera QE", "Reflectance/ECOSIS"])
     
     with tab1:
         import_filter_tab()
@@ -409,50 +409,162 @@ def import_qe_tab():
 
 def import_reflectance_tab():
     """Reflectance/absorption import interface."""
-    from services.importing import import_reflectance_absorption_from_csv
+    from services.importing import import_reflectance_absorption_from_csv, import_ecosis_csv
     
-    uploaded_file = st.file_uploader(
-        "Upload CSV (Wavelength, Reflectance/Absorption)", 
-        type="csv", 
-        key="reflectance_upload"
+    st.subheader("Import Reflectance/Absorption Data")
+    
+    # File type selection
+    file_type = st.radio(
+        "Select file type:",
+        ["Single Spectrum CSV", "ECOSIS Multi-Spectrum CSV"],
+        help="Choose between importing a single spectrum or multiple spectra from ECOSIS database"
     )
     
-    if uploaded_file is not None:
-        with st.form("reflectance_import_form"):
-            col1, col2 = st.columns(2)
+    if file_type == "Single Spectrum CSV":
+        st.info("Upload a CSV file with two columns: Wavelength, Reflectance/Absorption")
+        
+        uploaded_file = st.file_uploader(
+            "Upload CSV File", 
+            type="csv", 
+            key="single_spectrum_upload"
+        )
+        
+        if uploaded_file is not None:
+            with st.form("single_spectrum_form"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    name = st.text_input("Spectrum Name", value="Custom Spectrum", max_chars=50)
+                    data_type = st.selectbox("Data Type", ["Reflectance", "Absorption"])
+                
+                with col2:
+                    category = st.selectbox("Category", ["Plant", "Other"])
+                    description = st.text_area("Description (optional)", height=70)
+                
+                # Always extrapolate to full range for consistency
+                extrap_lower = True
+                extrap_upper = True
+                
+                submitted = st.form_submit_button("Import Single Spectrum", type="primary")
+                
+                if submitted:
+                    if not name.strip():
+                        st.error("Spectrum name is required")
+                    else:
+                        with st.spinner("Importing spectrum..."):
+                            meta = {
+                                "name": name.strip(),
+                                "data_type": data_type,
+                                "category": category,
+                                "description": description.strip()
+                            }
+                            
+                            success, message = import_reflectance_absorption_from_csv(
+                                uploaded_file, meta, extrap_lower, extrap_upper
+                            )
+                            
+                            if success:
+                                st.success("Spectrum imported successfully!")
+                                st.rerun()
+                            else:
+                                st.error(f"Import failed: {message}")
+    
+    elif file_type == "ECOSIS Multi-Spectrum CSV":
+        st.info("Upload an ECOSIS database CSV file containing multiple samples with wavelength columns")
+        
+        ecosis_file = st.file_uploader(
+            "Upload ECOSIS CSV File", 
+            type="csv", 
+            key="ecosis_upload",
+            help="CSV files from the ECOSIS spectral library"
+        )
+        
+        if ecosis_file is not None:
+            # Get available metadata columns from the uploaded file
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp_file:
+                tmp_file.write(ecosis_file.getvalue())
+                tmp_file_path = tmp_file.name
             
-            with col1:
-                name = st.text_input("Spectrum Name", value="Custom Spectrum", max_chars=50)
-                data_type = st.selectbox("Data Type", ["Reflectance", "Absorption"])
+            # Import the helper function
+            from services.importing import get_ecosis_csv_metadata_columns
+            metadata_columns = get_ecosis_csv_metadata_columns(tmp_file_path)
             
-            with col2:
-                category = st.selectbox("Category", ["Plant", "Other"])
-                description = st.text_area("Description (optional)", height=60)
-            
-            # Always extrapolate to full range for consistency
-            extrap_lower = True
-            extrap_upper = True
-            
-            submitted = st.form_submit_button("Import Spectrum", type="primary")
-            
-            if submitted:
-                if not name.strip():
-                    st.error("Spectrum name is required")
-                else:
-                    with st.spinner("Importing..."):
-                        meta = {
-                            "name": name.strip(),
-                            "data_type": data_type,
-                            "category": category,
-                            "description": description.strip()
-                        }
-                        
-                        success, message = import_reflectance_absorption_from_csv(
-                            uploaded_file, meta, extrap_lower, extrap_upper
-                        )
-                        
-                        if success:
-                            st.success("Spectrum imported successfully!")
+            with st.form("ecosis_import_form"):
+                st.write("**Import Settings**")
+                
+                # Column selection for naming/search
+                name_column = None
+                if metadata_columns:
+                    st.write("**Name Column Selection:**")
+                    name_column = st.selectbox(
+                        "Choose column for spectrum names in dropdown menu:",
+                        options=["None"] + metadata_columns,
+                        index=0,
+                        help="Select which CSV column should be used to name spectra in the application's dropdown menus. This will be stored as 'name_for_search' metadata."
+                    )
+                    if name_column == "None":
+                        name_column = None
+                
+                # API URL input for enhanced metadata
+                api_url = st.text_input(
+                    "ECOSIS API URL (Optional)",
+                    placeholder="https://ecosis.org/api/package/package-name",
+                    help="Optional: Provide the ECOSIS API URL to include standardized metadata and attribution information in the output files. This ensures proper scientific attribution to the original dataset."
+                )
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**Output Location:** Reflectors/Ecosis/{filename}")
+                    st.write("**Processing:** Individual .tsv files per spectrum")
+                
+                with col2:
+                    st.write("**Wavelength Range:** 300-1100nm (extrapolated)")
+                    st.write("**Format:** Standard interpolated grid")
+                    
+                if api_url:
+                    st.write("**Enhanced:** API metadata and attribution will be included")
+                
+                submitted = st.form_submit_button("Import ECOSIS File", type="primary")
+                
+                if submitted:
+                    with st.spinner("Processing ECOSIS CSV file..."):
+                        try:
+                            # Save uploaded file temporarily (reuse the same temp file)
+                            # tmp_file_path is already available from column detection above
+                            
+                            # Create Ecosis subfolder structure with CSV filename as subfolder
+                            csv_filename = os.path.splitext(ecosis_file.name)[0]  # Remove .csv extension
+                            csv_filename = ''.join(c for c in csv_filename if c.isalnum() or c in (' ', '_', '-')).rstrip().replace(' ', '_')
+                            
+                            output_dir = os.path.join("data", "reflectors", "Ecosis", csv_filename)
+                            os.makedirs(output_dir, exist_ok=True)
+                            
+                            created_files = import_ecosis_csv(
+                                tmp_file_path, 
+                                output_dir, 
+                                api_url.strip() if api_url.strip() else None,
+                                name_column
+                            )
+                            
+                            # Clean up temp file
+                            os.unlink(tmp_file_path)
+
+                            st.success(f"Successfully imported {len(created_files)} spectra from ECOSIS file!")
+
+                            # Show imported file names in an expander
+                            if len(created_files) > 0:
+                                with st.expander("View imported files", expanded=True):
+                                    for i, filepath in enumerate(created_files[:8]):
+                                        filename = os.path.basename(filepath)
+                                        st.write(f"- {filename}")
+
+                                    if len(created_files) > 8:
+                                        st.write(f"... and {len(created_files) - 8} more files")
+
                             st.rerun()
-                        else:
-                            st.error(f"Import failed: {message}")
+
+                        except Exception as e:
+                            st.error(f"ECOSIS import failed: {str(e)}")

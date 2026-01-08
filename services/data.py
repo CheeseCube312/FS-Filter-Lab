@@ -15,7 +15,10 @@ from models import (
     Filter, FilterCollection, TargetProfile,
     ReflectorSpectrum, ReflectorCollection
 )
-from models.constants import CACHE_DIR, DEFAULT_HEX_COLOR, DEFAULT_ILLUMINANT, INTERP_GRID
+from models.constants import (
+    CACHE_DIR, DEFAULT_HEX_COLOR, DEFAULT_ILLUMINANT, INTERP_GRID,
+    DATA_FOLDERS, TSV_COLUMNS, METADATA_FIELDS, SPECTRAL_CONFIG
+)
 
 
 def interpolate_to_standard_grid(wavelengths: np.ndarray, values: np.ndarray) -> np.ndarray:
@@ -36,6 +39,70 @@ Path(CACHE_DIR).mkdir(exist_ok=True)
 
 # Generic type for cached data
 T = TypeVar('T')
+
+def parse_comment_headers(file_path: str | Path) -> Tuple[Dict[str, str], List[str]]:
+    """
+    Parse comment headers from a TSV file and return metadata and data lines.
+    
+    Args:
+        file_path: Path to the TSV file with comment headers
+        
+    Returns:
+        Tuple of (metadata_dict, data_lines) where data_lines excludes comment headers
+    """
+    path = Path(file_path) if isinstance(file_path, str) else file_path
+    
+    metadata = {}
+    data_lines = []
+    
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\n\r')
+            
+            # Skip empty lines
+            if not line.strip():
+                continue
+                
+            # Check if this is a comment line with metadata
+            if line.startswith('# ') and '\t' in line:
+                # Extract key-value pair from comment
+                content = line[2:]  # Remove "# "
+                if '\t' in content:
+                    key, value = content.split('\t', 1)
+                    metadata[key.strip()] = value.strip()
+            elif line.startswith('#'):
+                # Skip section headers and other comment-only lines
+                continue
+            else:
+                # This is a data line
+                data_lines.append(line)
+    
+    return metadata, data_lines
+
+
+def parse_tsv_with_comments(file_path: str | Path) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """
+    Parse a TSV file with comment headers, returning both data and metadata.
+    
+    Args:
+        file_path: Path to the TSV file
+        
+    Returns:
+        Tuple of (dataframe, metadata_dict)
+    """
+    metadata, data_lines = parse_comment_headers(file_path)
+    
+    if not data_lines:
+        return pd.DataFrame(), metadata
+    
+    # Create a temporary file-like object from data lines
+    from io import StringIO
+    data_content = '\n'.join(data_lines)
+    df = pd.read_csv(StringIO(data_content), sep='\t')
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    return df, metadata
+
 
 def parse_tsv_file(file_path: str | Path) -> pd.DataFrame:
     """
@@ -158,7 +225,7 @@ def _process_filter_file(path: Path) -> Optional[Tuple[dict, np.ndarray, np.ndar
     df = parse_tsv_file(path)
     
     # Check if file has required columns
-    if "Wavelength" not in df.columns or "Transmittance" not in df.columns:
+    if TSV_COLUMNS['wavelength'] not in df.columns or TSV_COLUMNS['transmittance'] not in df.columns:
         return None
     
     filename = path.name
@@ -167,16 +234,16 @@ def _process_filter_file(path: Path) -> Optional[Tuple[dict, np.ndarray, np.ndar
     # Extract metadata from first row
     first_row = df.iloc[0]
     
-    fn = str(first_row.get('Filter Number', path.stem))
-    name_raw = first_row.get('Name')
+    fn = str(first_row.get(TSV_COLUMNS['filter_number'], path.stem))
+    name_raw = first_row.get(TSV_COLUMNS['filter_name'])
     name = str(name_raw).strip() if pd.notnull(name_raw) and str(name_raw).strip() else path.stem
-    manufacturer = first_row.get('Manufacturer', 'Unknown')
-    hex_color_raw = first_row.get('hex_color', DEFAULT_HEX_COLOR)
+    manufacturer = first_row.get(TSV_COLUMNS['manufacturer'], 'Unknown')
+    hex_color_raw = first_row.get(TSV_COLUMNS['hex_color'], DEFAULT_HEX_COLOR)
     hex_color = str(hex_color_raw).strip() if pd.notnull(hex_color_raw) and str(hex_color_raw).strip().startswith("#") else DEFAULT_HEX_COLOR
     
     # Extract wavelength and transmittance values
-    wavelengths = df["Wavelength"].astype(float).values
-    transmittance = df["Transmittance"].astype(float).values
+    wavelengths = df[TSV_COLUMNS['wavelength']].astype(float).values
+    transmittance = df[TSV_COLUMNS['transmittance']].astype(float).values
     
     # Normalize if needed
     if transmittance.max() > 1.5:
@@ -212,7 +279,7 @@ def _load_filter_collection_from_files() -> FilterCollection:
     Returns:
         FilterCollection object
     """
-    data_folder = Path("data") / "filters_data"
+    data_folder = Path(DATA_FOLDERS['filters'])
     data_folder.mkdir(exist_ok=True, parents=True)
     
     files = list(data_folder.glob("**/*.tsv"))
@@ -258,7 +325,7 @@ def load_filter_collection() -> FilterCollection:
     try:
         cached_data = cached_loader(
             cache_key="filter_data",
-            data_folder=str(Path("data") / "filters_data"),
+            data_folder=DATA_FOLDERS['filters'],
             load_function=_create_cached_data
         )
         
@@ -331,7 +398,7 @@ def _load_quantum_efficiencies_from_files() -> Tuple[List[str], Dict[str, Dict[s
     Returns:
         Tuple of (qe_keys, qe_data, default_key)
     """
-    folder = Path('data') / 'QE_data'
+    folder = Path(DATA_FOLDERS['qe'])
     folder.mkdir(exist_ok=True, parents=True)
     
     files = list(folder.glob('*.tsv'))
@@ -353,7 +420,7 @@ def load_quantum_efficiencies() -> Tuple[List[str], Dict[str, Dict[str, np.ndarr
     """Load quantum efficiency data for camera sensors."""
     return cached_loader(
         cache_key="qe_data",
-        data_folder=Path('data') / 'QE_data',
+        data_folder=DATA_FOLDERS['qe'],
         load_function=_load_quantum_efficiencies_from_files
     )
 
@@ -396,7 +463,7 @@ def _load_illuminant_collection_from_files() -> Tuple[Dict[str, np.ndarray], Dic
     Returns:
         Tuple of (illuminants, metadata)
     """
-    folder = Path('data') / 'illuminants'
+    folder = Path(DATA_FOLDERS['illuminants'])
     folder.mkdir(exist_ok=True, parents=True)
 
     illum, meta = {}, {}
@@ -416,14 +483,14 @@ def load_illuminant_collection() -> Tuple[Dict[str, np.ndarray], Dict[str, str]]
     """Load illuminant collection."""
     return cached_loader(
         cache_key="illuminants",
-        data_folder=Path('data') / 'illuminants',
+        data_folder=DATA_FOLDERS['illuminants'],
         load_function=_load_illuminant_collection_from_files
     )
 
 
 def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     """
-    Process a reflector file.
+    Process a reflector file with comment-based metadata.
     
     Args:
         path: Path to the reflector file
@@ -431,29 +498,42 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     Returns:
         Tuple of (name, interpolated_data) or None if invalid
     """
-    df = parse_tsv_file(path)
-    
-    # Check for required columns
-    if "Wavelength" not in df.columns or "Reflectance" not in df.columns:
+    try:
+        df, metadata = parse_tsv_with_comments(path)
+    except Exception:
         return None
     
-    # Extract name from the first row if present, else use filename
-    name = None
-    if "Name" in df.columns:
-        name_values = df["Name"].dropna()
-        if len(name_values) > 0:
-            name = name_values.iloc[0]
+    # Check for required columns
+    if TSV_COLUMNS['wavelength'] not in df.columns or TSV_COLUMNS['reflectance'] not in df.columns:
+        return None
     
+    # Extract name from metadata, prioritizing name_for_search field
+    name = None
+    
+    # First priority: use the user-selected name_for_search field
+    if METADATA_FIELDS['name_for_search'] in metadata and metadata[METADATA_FIELDS['name_for_search']].strip():
+        name = metadata[METADATA_FIELDS['name_for_search']].strip()
+    else:
+        # Fallback: try common name fields from metadata
+        name_fields = [METADATA_FIELDS['species'], METADATA_FIELDS['name'], 
+                      METADATA_FIELDS['sample_type'], METADATA_FIELDS['collector'], 
+                      METADATA_FIELDS['package_title']]
+        for field in name_fields:
+            if field in metadata and metadata[field].strip():
+                name = metadata[field].strip()
+                break
+    
+    # Final fallback to filename if no name found in metadata
     if not name:
         name = path.stem
     
     # Process wavelength and reflectance data
-    wl = df["Wavelength"].astype(float).values
-    refl = df["Reflectance"].astype(float).values
+    wl = df[TSV_COLUMNS['wavelength']].astype(float).values
+    refl = df[TSV_COLUMNS['reflectance']].astype(float).values
     
     # Check for sufficient valid data points
     valid_mask = ~np.isnan(refl)
-    if np.sum(valid_mask) < 2:
+    if np.sum(valid_mask) < SPECTRAL_CONFIG['min_data_points']:
         return None
         
     wl = wl[valid_mask]
@@ -462,13 +542,12 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     # Interpolate to standard grid
     interp_vals = interpolate_to_standard_grid(wl, refl)
     
-    # Normalize reflectance units: if values look like percents (>1.5), convert to fraction [0..1]
-    # This handles existing files that may have been imported before normalization was added
-    if np.nanmax(interp_vals) > 1.5:
+    # Normalize reflectance units: if values look like percents (>threshold), convert to fraction [0..1]
+    if np.nanmax(interp_vals) > SPECTRAL_CONFIG['normalization_threshold']:
         interp_vals = interp_vals / 100.0
     
-    # Round to 3 decimal places to avoid floating point precision issues
-    interp_vals = np.round(interp_vals, 3)
+    # Round to specified decimal places to avoid floating point precision issues
+    interp_vals = np.round(interp_vals, SPECTRAL_CONFIG['precision_decimals'])
     
     return name, interp_vals
 
@@ -480,7 +559,7 @@ def _load_reflector_collection_from_files() -> ReflectorCollection:
     Returns:
         ReflectorCollection object
     """
-    folder = Path('data') / 'reflectors'
+    folder = Path(DATA_FOLDERS['reflectors'])
     folder.mkdir(exist_ok=True, parents=True)
 
     files = list(folder.glob("**/*.tsv"))
@@ -505,6 +584,6 @@ def load_reflector_collection() -> ReflectorCollection:
     """Load reflector collection."""
     return cached_loader(
         cache_key="reflectors",
-        data_folder=Path('data') / 'reflectors',
+        data_folder=DATA_FOLDERS['reflectors'],
         load_function=_load_reflector_collection_from_files
     )

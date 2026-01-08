@@ -140,7 +140,7 @@ def handle_app_actions(actions: Dict[str, Any], state_manager: StateManager, dat
                 selected_camera=selected_camera
             )
             if success:
-                show_success_message("✅ Full report generated! Files saved to output folder.")
+                show_success_message("Full report generated. Files saved to output folder.")
                 st.rerun()
             else:
                 handle_error("Failed to generate full report. Check console for details.")
@@ -157,7 +157,7 @@ def handle_app_actions(actions: Dict[str, Any], state_manager: StateManager, dat
                 filter_collection=data['filter_collection']
             )
             if success:
-                show_success_message("✅ TSV generated and ready for download!")
+                show_success_message("TSV generated and ready for download!")
                 st.rerun()
             else:
                 handle_error("Failed to generate TSV. Make sure you have filters selected.")

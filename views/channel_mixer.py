@@ -62,7 +62,7 @@ def render_channel_mixer_panel(mixer_settings: ChannelMixerSettings) -> ChannelM
     # Header with reset button
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.subheader("🎨 Channel Mixer")
+        st.subheader("Channel Mixer")
     with col2:
         if st.button("Reset", help="Reset to no mixing"):
             _reset_mixer_to_identity(mixer_settings)
@@ -122,7 +122,7 @@ def _render_compact_sliders(mixer_settings: ChannelMixerSettings) -> None:
     # Red output row
     col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
     with col1:
-        st.markdown("🔴 **Red**")
+        st.markdown("**Red**")
     with col2:
         st.slider(
             "Red→Red", *CHANNEL_MIXER_RANGE, step=CHANNEL_MIXER_STEP,
@@ -142,7 +142,7 @@ def _render_compact_sliders(mixer_settings: ChannelMixerSettings) -> None:
     # Green output row
     col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
     with col1:
-        st.markdown("🟢 **Green**")
+        st.markdown("**Green**")
     with col2:
         st.slider(
             "Red→Green", *CHANNEL_MIXER_RANGE, step=CHANNEL_MIXER_STEP,
@@ -162,7 +162,7 @@ def _render_compact_sliders(mixer_settings: ChannelMixerSettings) -> None:
     # Blue output row
     col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
     with col1:
-        st.markdown("🔵 **Blue**")
+        st.markdown("**Blue**")
     with col2:
         st.slider(
             "Red→Blue", *CHANNEL_MIXER_RANGE, step=CHANNEL_MIXER_STEP,
@@ -229,6 +229,6 @@ def validate_and_warn_mixer_settings(mixer_settings: ChannelMixerSettings) -> No
     # Only show critical warnings
     det = np.linalg.det(matrix)
     if abs(det) < 1e-6:
-        st.error("❌ Settings may cause color loss - try adjusting values")
+        st.error("Settings may cause color loss - try adjusting values")
     elif np.any(np.abs(matrix) > 5.0):
-        st.warning("⚠️ Extreme values may produce unusual results")
+        st.warning("Extreme values may produce unusual results")

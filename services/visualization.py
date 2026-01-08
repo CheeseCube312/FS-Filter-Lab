@@ -960,8 +960,7 @@ def create_leaf_reflectance_figure(
     reflector_collection: Any,
     height: int = None
 ) -> Optional[go.Figure]:
-    """Create a figure showing the four leaf reflectance spectra."""
-    from models.constants import VEGETATION_PREVIEW_FILES
+    """Create a figure showing the four default vegetation reflectance spectra."""
     from services.calculations import find_vegetation_preview_reflectors
     
     if not reflector_collection or not hasattr(reflector_collection, 'reflectors'):
@@ -973,12 +972,13 @@ def create_leaf_reflectance_figure(
     
     fig = go.Figure()
     
-    # Define colors for the four leaf spectra
+    # Define colors for the four default spectra
     leaf_colors = CHART_COLORS['leaf_colors']
     
     for i, leaf_idx in enumerate(leaf_indices):
         reflector_data = reflector_matrix[leaf_idx]
-        leaf_name = VEGETATION_PREVIEW_FILES[i]
+        # Use the actual reflector name from the collection
+        leaf_name = reflector_collection.reflectors[leaf_idx].name
         
         fig.add_trace(go.Scatter(
             x=interp_grid,
@@ -988,7 +988,7 @@ def create_leaf_reflectance_figure(
             line=_create_line_style(leaf_colors[i])
         ))
     
-    apply_plotly_default_style(fig, "Leaf Reflectance Spectra", y_title="Reflectance", 
+    apply_plotly_default_style(fig, "Default Vegetation Reflectance Spectra", y_title="Reflectance", 
                               height=height or CHART_HEIGHTS['default'])
     
     return fig
