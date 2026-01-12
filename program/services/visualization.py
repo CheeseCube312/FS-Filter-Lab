@@ -22,11 +22,12 @@ from matplotlib.patches import Rectangle
 import plotly.graph_objects as go
 
 # Local imports
-from models.core import ChannelMixerSettings
+from models.core import (
+    ChannelMixerSettings, ReportConfig, FilterData, ComputationFunctions, SensorData
+)
 from models.constants import (
     CHART_HEIGHTS, CHART_LINE_STYLES, CHART_COLORS, PLOT_LAYOUT, 
-    SENSOR_RESPONSE_DEFAULTS, MPL_STYLE_CONFIG, REPORT_CONFIG,
-    ReportConfig, FilterData, ComputationFunctions, SensorData
+    SENSOR_RESPONSE_DEFAULTS, MPL_STYLE_CONFIG, REPORT_CONFIG, OUTPUT_FOLDERS
 )
 
 # =============================================================================

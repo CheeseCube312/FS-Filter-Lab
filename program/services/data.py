@@ -192,6 +192,7 @@ def create_empty_reflector_collection() -> ReflectorCollection:
     """Create an empty reflector collection."""
     return ReflectorCollection(
         reflectors=[],
+        df=pd.DataFrame(),
         reflector_matrix=np.empty((0, len(INTERP_GRID)))
     )
 
@@ -492,7 +493,7 @@ def load_illuminant_collection() -> Tuple[Dict[str, np.ndarray], Dict[str, str]]
     )
 
 
-def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
+def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray, Dict[str, str]]]:
     """
     Process a reflector file with comment-based metadata.
     
@@ -500,7 +501,7 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
         path: Path to the reflector file
         
     Returns:
-        Tuple of (name, interpolated_data) or None if invalid
+        Tuple of (name, interpolated_data, metadata_dict) or None if invalid
     """
     try:
         df, metadata = parse_tsv_with_comments(path)
@@ -511,13 +512,21 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     if TSV_COLUMNS['wavelength'] not in df.columns or TSV_COLUMNS['reflectance'] not in df.columns:
         return None
     
+    # Add source file info to metadata
+    metadata['source_file'] = str(path)
+    metadata['source_folder'] = path.parent.name
+    
     # Extract name from metadata, prioritizing name_for_search field
     name = None
     
-    # First priority: use the user-selected name_for_search field
+    # First priority: use the user-selected name_for_search field (now contains column name, not value)
     if METADATA_FIELDS['name_for_search'] in metadata and metadata[METADATA_FIELDS['name_for_search']].strip():
-        name = metadata[METADATA_FIELDS['name_for_search']].strip()
-    else:
+        column_name = metadata[METADATA_FIELDS['name_for_search']].strip()
+        # Look up the actual value using the column name
+        if column_name in metadata and metadata[column_name].strip():
+            name = metadata[column_name].strip()
+    
+    if not name:
         # Fallback: try common name fields from metadata
         name_fields = [METADATA_FIELDS['species'], METADATA_FIELDS['name'], 
                       METADATA_FIELDS['sample_type'], METADATA_FIELDS['collector'], 
@@ -554,7 +563,7 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray]]:
     # Round to specified decimal places to avoid floating point precision issues
     interp_vals = np.round(interp_vals, SPECTRAL_CONFIG['precision_decimals'])
     
-    return name, interp_vals
+    return name, interp_vals, metadata
 
 
 def _load_reflector_collection_from_files() -> ReflectorCollection:
@@ -570,19 +579,37 @@ def _load_reflector_collection_from_files() -> ReflectorCollection:
     files = list(folder.glob("**/*.tsv"))
     reflectors = []
     matrix = []
+    meta_list = []
 
     for path in files:
         result = safely_load_file(path, _process_reflector_file)
         if result:
-            name, interp_vals = result
-            reflectors.append(ReflectorSpectrum(name=name, values=interp_vals))
+            name, interp_vals, metadata = result
+            reflectors.append(ReflectorSpectrum(name=name, values=interp_vals, metadata=metadata))
             matrix.append(interp_vals)
+            
+            # Build metadata row for DataFrame
+            meta_row = {
+                'Name': name,
+                'Organization': metadata.get('Organization', ''),
+                'Package Title': metadata.get('Package Title', ''),
+                'Target Type': metadata.get('Target Type', ''),
+                'Common Name': metadata.get('Common Name', ''),
+                'Latin Genus': metadata.get('Latin Genus', ''),
+                'Latin Species': metadata.get('Latin Species', ''),
+                'Source File': metadata.get('source_file', ''),
+                'Source Folder': metadata.get('source_folder', ''),
+                'IsDefault': metadata.get('IsDefault', '')
+            }
+            meta_list.append(meta_row)
 
     if not matrix:
         return create_empty_reflector_collection()
     
     reflector_matrix = np.vstack(matrix)
-    return ReflectorCollection(reflectors=reflectors, reflector_matrix=reflector_matrix)
+    df_result = pd.DataFrame(meta_list)
+    
+    return ReflectorCollection(reflectors=reflectors, df=df_result, reflector_matrix=reflector_matrix)
 
 
 def load_reflector_collection() -> ReflectorCollection:

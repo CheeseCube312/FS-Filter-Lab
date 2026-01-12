@@ -6,10 +6,53 @@ session_state as the single source of truth, with a clean object-oriented
 interface for type-safe state access and modification.
 """
 import streamlit as st
+import numpy as np
 from typing import Any, Dict, List, Optional, Union
 
-from models.constants import DEFAULT_RGB_VISIBILITY, DEFAULT_WB_GAINS, DEFAULT_CHANNEL_MIXER
+from models.constants import DEFAULT_WB_GAINS, DEFAULT_CHANNEL_MIXER
 from models.core import TargetProfile, ChannelMixerSettings
+
+
+# =============================================================================
+# STATE CONFIGURATION CONSTANTS
+# =============================================================================
+
+# Default values for all state keys - single source of truth
+# Note: white_balance_gains uses .copy() when accessed to prevent mutation
+STATE_DEFAULTS = {
+    # Filter data
+    'selected_filters': [],
+    'filter_multipliers': {},
+    
+    # QE and illuminant data  
+    'current_qe': None,
+    'selected_camera': None,
+    'illuminant': None,
+    'illuminant_name': None,
+    
+    # Target profile
+    'target_profile': None,
+    
+    # Computed results
+    'combined_transmission': None,
+    'white_balance_gains': DEFAULT_WB_GAINS,  # .copy() applied on access
+    'wb_reference_surface': None,  # Source file of surface used for WB reference
+    
+    # Export/report state
+    'last_export': {},
+    'last_tsv_export': {},
+    
+    # UI state (non-widget controlled)
+    'import_status': None,
+    'import_error_message': None,
+}
+
+# Keys that are managed by Streamlit widgets - don't initialize manually
+WIDGET_CONTROLLED_KEYS = {
+    'selected_filters', 'show_advanced_search', 'show_import_data', 
+    'sidebar_log_view_toggle', 'apply_white_balance_toggle', 
+    'show_R', 'show_G', 'show_B', 'show_channel_mixer'
+}
 
 
 class StateManager:
@@ -60,44 +103,15 @@ class StateManager:
         Widget-controlled keys are explicitly excluded to avoid conflicts
         with Streamlit's widget management system.
         """
-        defaults = {
-            # Filter data
-            'filter_multipliers': {},
-            
-            # QE and illuminant data  
-            'current_qe': None,
-            'selected_camera': None,
-            'illuminant': None,
-            'illuminant_name': None,
-            
-            # Target profile
-            'target_profile': None,
-            
-            # Computed results
-            'combined_transmission': None,
-            'white_balance_gains': DEFAULT_WB_GAINS.copy(),
-            
-            # Note: Channel mixer is now handled dynamically via _build_live_channel_mixer()
-            # to ensure immediate UI responsiveness
-            
-            # Export/report state
-            'last_export': {},
-            'last_tsv_export': {},
-            
-            # UI state (non-widget controlled)
-            'import_status': None,
-            'import_error_message': None,
-        }
-        
-        # Widget-controlled keys (managed by Streamlit widgets, don't initialize manually)
-        widget_keys = {
-            'selected_filters', 'show_advanced_search', 'show_import_data', 'sidebar_log_view_toggle',
-            'apply_white_balance_toggle', 'show_R', 'show_G', 'show_B', 'show_channel_mixer'
-        }
-        
-        for key, default_value in defaults.items():
-            if key not in st.session_state and key not in widget_keys:
-                st.session_state[key] = default_value
+        for key, default_value in STATE_DEFAULTS.items():
+            if key not in st.session_state and key not in WIDGET_CONTROLLED_KEYS:
+                # Use .copy() for mutable defaults to prevent shared state
+                if isinstance(default_value, dict):
+                    st.session_state[key] = default_value.copy()
+                elif isinstance(default_value, list):
+                    st.session_state[key] = default_value.copy()
+                else:
+                    st.session_state[key] = default_value
 
 
     
@@ -130,21 +144,6 @@ class StateManager:
             state.current_qe        # Returns None if not set
             state.log_view         # Returns False if not set
         """
-        defaults = {
-            'selected_filters': [],
-            'filter_multipliers': {},
-            'current_qe': None,
-            'selected_camera': None,
-            'illuminant': None,
-            'illuminant_name': None,
-            'target_profile': None,
-            'combined_transmission': None,
-            'white_balance_gains': DEFAULT_WB_GAINS.copy(),
-            # Note: channel_mixer is now handled dynamically via _build_live_channel_mixer()
-            'last_export': {},
-            'last_tsv_export': {},
-        }
-        
         # Handle special cases for widget-controlled state
         if name == 'log_view':
             return st.session_state.get('sidebar_log_view_toggle', False)
@@ -172,30 +171,67 @@ class StateManager:
             # Don't interfere with private attributes
             raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
         
-        return st.session_state.get(name, defaults.get(name))
+        # Use STATE_DEFAULTS for fallback values, with .copy() for mutable types
+        default = STATE_DEFAULTS.get(name)
+        if isinstance(default, (dict, list)):
+            default = default.copy() if default else default
+        return st.session_state.get(name, default)
     
     def __setattr__(self, name: str, value: Any) -> None:
         """Set attribute in session state."""
-        if name.startswith('_') or name in ['_ensure_initialized']:
-            # Allow private attributes and methods to be set normally
+        if name.startswith('_'):
+            # Allow private attributes to be set normally
             super().__setattr__(name, value)
-        else:
+        elif name in WIDGET_CONTROLLED_KEYS or name in ('log_view', 'apply_white_balance', 'rgb_channels_visibility'):
             # Widget-controlled keys should not be manually set, they're managed by Streamlit
-            widget_keys = {
-                'log_view': 'sidebar_log_view_toggle', 
-                'show_advanced_search': 'show_advanced_search',
-                'show_import_data': 'show_import_data',
-                'apply_white_balance': 'apply_white_balance_toggle',
-                'rgb_channels_visibility': None  # Special case - managed by individual keys
-            }
-            
-            if name in widget_keys:
-                # These are managed by widgets, don't try to set them manually
-                # Just log that we're ignoring the attempt
-                pass
-            else:
-                st.session_state[name] = value
+            pass
+        else:
+            st.session_state[name] = value
     
+        
+    def get_selected_reflector_idx(self) -> Optional[Union[int, str]]:
+        """Get currently selected reflector index."""
+        return st.session_state.get("selected_reflector_idx", None)
+    
+    def set_selected_reflector_idx(self, idx: Optional[Union[int, str]]) -> None:
+        """Set selected reflector index."""
+        st.session_state["selected_reflector_idx"] = idx
+    
+    def set_white_balance_from_surface(
+        self, 
+        reflector: np.ndarray, 
+        transmission: np.ndarray,
+        source_file: Optional[str] = None
+    ) -> None:
+        """
+        Update white balance gains using a selected surface as reference.
+        
+        Args:
+            reflector: Reflectance spectrum of the reference surface
+            transmission: Combined filter transmission values
+            source_file: Source file path of the reference surface (for tracking)
+        """
+        from services.calculations import compute_white_balance_gains_from_surface
+        
+        if self.current_qe and self.illuminant is not None:
+            new_gains = compute_white_balance_gains_from_surface(
+                reflector, transmission, self.current_qe, self.illuminant
+            )
+            self.white_balance_gains = new_gains
+            # Store reference surface so WB can be recalculated when filters change
+            self.wb_reference_surface = source_file
+    
+    def reset_white_balance(self) -> None:
+        """
+        Reset white balance to default behavior (standard computation from transmission/QE/illuminant).
+        """
+        from models.constants import DEFAULT_WB_GAINS
+        
+        # Set back to default gains, which will trigger standard WB computation
+        self.white_balance_gains = DEFAULT_WB_GAINS.copy()
+        # Clear reference surface so standard WB computation is used
+        self.wb_reference_surface = None
+
     # ========================================================================
     # UTILITY METHODS
     # ========================================================================
@@ -231,10 +267,90 @@ class StateManager:
         
         return mixer
     
-
+    # ========================================================================
+    # DEFAULT REFLECTOR LIST MANAGEMENT
+    # ========================================================================
     
-
+    _DEFAULT_REFLECTORS_FILE = "program/data/reflectors/default_reflectors.json"
     
+    def _load_default_reflectors_from_file(self) -> List[str]:
+        """Load default reflector list from JSON file."""
+        import json
+        from pathlib import Path
+        
+        file_path = Path(self._DEFAULT_REFLECTORS_FILE)
+        if file_path.exists():
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get('default_reflectors', [])
+            except (json.JSONDecodeError, IOError):
+                return []
+        return []
+    
+    def _save_default_reflectors_to_file(self, reflector_files: List[str]) -> None:
+        """Save default reflector list to JSON file."""
+        import json
+        from pathlib import Path
+        
+        file_path = Path(self._DEFAULT_REFLECTORS_FILE)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump({'default_reflectors': reflector_files}, f, indent=2)
+        except IOError:
+            pass  # Silently fail on write errors
+    
+    def get_default_reflector_files(self) -> List[str]:
+        """
+        Get list of default reflector source file paths.
+        
+        Returns:
+            List of source file paths for default reflectors
+        """
+        # First check session state, then fall back to file
+        if 'default_reflector_files' not in st.session_state:
+            st.session_state['default_reflector_files'] = self._load_default_reflectors_from_file()
+        return st.session_state.get('default_reflector_files', [])
+    
+    def is_default_reflector(self, source_file: str) -> bool:
+        """
+        Check if a reflector is in the default list.
+        
+        Args:
+            source_file: Source file path of the reflector
+            
+        Returns:
+            True if the reflector is in the default list
+        """
+        return source_file in self.get_default_reflector_files()
+    
+    def add_to_default_reflectors(self, source_file: str) -> None:
+        """
+        Add a reflector to the default list.
+        
+        Args:
+            source_file: Source file path of the reflector to add
+        """
+        current = self.get_default_reflector_files()
+        if source_file not in current:
+            current.append(source_file)
+            st.session_state['default_reflector_files'] = current
+            self._save_default_reflectors_to_file(current)
+    
+    def remove_from_default_reflectors(self, source_file: str) -> None:
+        """
+        Remove a reflector from the default list.
+        
+        Args:
+            source_file: Source file path of the reflector to remove
+        """
+        current = self.get_default_reflector_files()
+        if source_file in current:
+            current.remove(source_file)
+            st.session_state['default_reflector_files'] = current
+            self._save_default_reflectors_to_file(current)
 
 
 

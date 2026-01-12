@@ -18,7 +18,7 @@ Design Principles:
 - Provides utility methods for common operations
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Callable, Tuple, Any
 import numpy as np
 import pandas as pd
 
@@ -198,9 +198,12 @@ class ReflectorSpectrum:
     Attributes:
         name: Descriptive name for the reflector (e.g., "Green Vegetation", "Skin Tone")
         values: Reflectance values across wavelength spectrum (0-1 range typical)
+        metadata: Dictionary containing all metadata from TSV comments (Organization, 
+                  Target Type, Package Title, species, etc.)
     """
     name: str
     values: np.ndarray  # Reflectance values across the spectrum
+    metadata: Dict[str, str] = field(default_factory=dict)  # All TSV comment metadata
 
 
 @dataclass
@@ -213,7 +216,64 @@ class ReflectorCollection:
     
     Attributes:
         reflectors: List of individual ReflectorSpectrum objects
+        df: Pandas DataFrame with reflector metadata for searching/filtering
         reflector_matrix: 2D array with each row containing reflectance data
     """
     reflectors: List[ReflectorSpectrum]
+    df: pd.DataFrame  # Searchable metadata (Name, Organization, Package Title, Target Type, etc.)
     reflector_matrix: np.ndarray  # Shape: (n_reflectors, n_wavelengths)
+
+
+# =============================================================================
+# REPORT AND CHART CONFIGURATION CLASSES
+# =============================================================================
+
+@dataclass
+class ReportConfig:
+    """Configuration for report generation parameters."""
+    selected_filters: List[str]
+    current_qe: Dict[str, np.ndarray]
+    camera_name: str
+    illuminant_name: str
+    illuminant_curve: np.ndarray
+
+
+@dataclass
+class FilterData:
+    """Container for filter-related data structures."""
+    filter_matrix: np.ndarray
+    df: Any
+    display_to_index: Dict[str, int]
+    masks: np.ndarray
+    interp_grid: np.ndarray
+
+
+@dataclass  
+class ComputationFunctions:
+    """Container for computation functions used in report generation."""
+    compute_selected_indices_fn: Callable[[List[str]], List[int]]
+    compute_filter_transmission_fn: Callable[[List[int]], Tuple[np.ndarray, str, np.ndarray]]
+    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray, Optional[np.ndarray]], Tuple[float, float]]
+    compute_white_balance_gains_fn: Callable[[np.ndarray, Dict[str, np.ndarray], np.ndarray], Dict[str, float]]
+    add_curve_fn: Callable
+    sanitize_fn: Callable[[str], str]
+
+
+@dataclass
+class SensorData:
+    """Container for sensor-related parameters."""
+    sensor_qe: np.ndarray
+
+
+@dataclass
+class ChartConfig:
+    """Configuration for chart styling and layout parameters."""
+    title: str = ""
+    x_title: str = "Wavelength (nm)" 
+    y_title: str = "Response"
+    height: Optional[int] = None
+    template: str = "plotly_white"
+    hovermode: str = "x unified"
+    log_scale: bool = False
+    show_legend: bool = True
+    show_spectrum_strip: bool = True

@@ -269,22 +269,6 @@ def calculate_transmission_deviation_metrics(
 # COLOR PROCESSING AND RGB RESPONSE
 # ============================================================================
 
-def normalize_pixels(pixels: np.ndarray) -> np.ndarray:
-    """
-    Normalize pixel values to a 0-1 range.
-    
-    Args:
-        pixels: RGB pixel values
-        
-    Returns:
-        Normalized pixels
-    """
-    max_value = np.max(pixels)
-    if max_value > 0:
-        return pixels / max_value
-    return pixels
-
-
 def compute_rgb_response(
     transmission: np.ndarray,
     quantum_efficiency: Dict[str, np.ndarray],
@@ -409,6 +393,69 @@ def compute_white_balance_gains(
     return DEFAULT_WB_GAINS.copy()
 
 
+def compute_white_balance_gains_from_surface(
+    reflector: np.ndarray,
+    transmission: np.ndarray,
+    quantum_efficiency: Dict[str, np.ndarray],
+    illuminant: np.ndarray
+) -> Dict[str, float]:
+    """
+    Compute white balance gains using a selected surface as reference.
+    
+    This simulates field white balancing where photographers white balance
+    on a specific surface (e.g., foliage in IR photography).
+    
+    Args:
+        reflector: Reflectance spectrum of the reference surface
+        transmission: Combined filter transmission values
+        quantum_efficiency: Dictionary of quantum efficiency values by channel
+        illuminant: Illuminant curve
+    
+    Returns:
+        Dictionary of white balance gains by channel
+    """
+    # Early exit for invalid data
+    if not is_valid_transmission(transmission):
+        return DEFAULT_WB_GAINS.copy()
+        
+    # Calculate RGB response for this surface under current conditions
+    rgb_resp = {}
+    for ch in ['R', 'G', 'B']:
+        qe_curve = quantum_efficiency.get(ch)
+        if qe_curve is None:
+            rgb_resp[ch] = np.nan
+            continue
+        
+        # Find valid data points
+        valid = (~np.isnan(reflector) & ~np.isnan(transmission) & 
+                ~np.isnan(qe_curve) & ~np.isnan(illuminant))
+        if not valid.any():
+            rgb_resp[ch] = np.nan
+            continue
+        
+        # Calculate channel response: reflector * transmission * QE * illuminant
+        rgb_resp[ch] = np.nansum(
+            reflector[valid] * 
+            transmission[valid] * 
+            qe_curve[valid] * 
+            illuminant[valid]
+        )
+
+    # Normalize gains using green as reference
+    g_response = rgb_resp.get('G', np.nan)
+    if not np.isnan(g_response) and g_response > EPSILON:
+        # Create white balance gains that will make this surface appear neutral
+        gains = {
+            ch: rgb_resp.get(ch, 0.0) / g_response if not np.isnan(rgb_resp.get(ch, 0.0)) else 1.0
+            for ch in ['R', 'G', 'B']
+        }
+        return gains
+    
+    # Fall back to defaults if we can't normalize
+    return DEFAULT_WB_GAINS.copy()
+
+
+
 # ============================================================================
 # REFLECTOR CALCULATIONS
 # ============================================================================
@@ -418,7 +465,8 @@ def compute_reflector_color(
     transmission: np.ndarray,
     quantum_efficiency: Dict[str, np.ndarray],
     illuminant: np.ndarray,
-    channel_mixer: Optional[ChannelMixerSettings] = None
+    channel_mixer: Optional[ChannelMixerSettings] = None,
+    white_balance_gains: Optional[Dict[str, float]] = None
 ) -> np.ndarray:
     """
     Compute reflector color from reflector, transmission, QE, and illuminant.
@@ -428,6 +476,7 @@ def compute_reflector_color(
         transmission: Transmission values
         quantum_efficiency: Dictionary of quantum efficiency values by channel
         illuminant: Illuminant curve
+        white_balance_gains: Pre-computed white balance gains (single source of truth)
         channel_mixer: Optional channel mixer settings for color manipulation
     
     Returns:
@@ -436,9 +485,6 @@ def compute_reflector_color(
     # Early exit for invalid data
     if not is_valid_transmission(transmission) or reflector is None:
         return np.zeros(3)
-        
-    # Compute white balance gains
-    wb = compute_white_balance_gains(transmission, quantum_efficiency, illuminant)
 
     # Process each channel
     rgb_resp = {}
@@ -467,7 +513,12 @@ def compute_reflector_color(
     # Apply white balance with safety against division by zero
     rgb_values = np.zeros(3)
     for i, ch in enumerate(['R', 'G', 'B']):
-        wb_gain = wb.get(ch, 1.0)
+        # Handle case where white_balance_gains is None
+        if white_balance_gains is not None:
+            wb_gain = white_balance_gains.get(ch, 1.0)
+        else:
+            wb_gain = 1.0
+        
         if wb_gain > EPSILON:
             rgb_values[i] = rgb_resp.get(ch, 0.0) / wb_gain
         else:
@@ -539,7 +590,8 @@ def compute_reflector_preview_colors(
     qe_data: Dict[str, np.ndarray],
     illuminant: np.ndarray,
     reflector_collection: ReflectorCollection = None,
-    channel_mixer: Optional[ChannelMixerSettings] = None
+    channel_mixer: Optional[ChannelMixerSettings] = None,
+    white_balance_gains: Optional[Dict[str, float]] = None
 ) -> Optional[np.ndarray]:
     """
     Compute colors for vegetation preview using reflectors with IsDefault metadata.
@@ -551,6 +603,7 @@ def compute_reflector_preview_colors(
         illuminant: Illuminant curve
         reflector_collection: ReflectorCollection with reflector names
         channel_mixer: Optional channel mixer settings
+        white_balance_gains: Pre-computed white balance gains from app state
         
     Returns:
         Array of RGB pixel values in 2x2 grid or None if default files not found
@@ -570,7 +623,7 @@ def compute_reflector_preview_colors(
             grid_idx = i * 2 + j
             reflector_idx = leaf_indices[grid_idx]
             reflector = reflector_matrix[reflector_idx]
-            pixels[i, j] = compute_reflector_color(reflector, transmission, qe_data, illuminant, channel_mixer)
+            pixels[i, j] = compute_reflector_color(reflector, transmission, qe_data, illuminant, channel_mixer, white_balance_gains)
     
     # Replace any NaN values with zeros
     pixels = np.nan_to_num(pixels)
@@ -588,7 +641,8 @@ def compute_single_reflector_color(
     transmission: np.ndarray,
     qe_data: Dict[str, np.ndarray],
     illuminant: np.ndarray,
-    channel_mixer: Optional[ChannelMixerSettings] = None
+    channel_mixer: Optional[ChannelMixerSettings] = None,
+    white_balance_gains: Optional[Dict[str, float]] = None
 ) -> Optional[np.ndarray]:
     """
     Compute color for a single selected reflector.
@@ -600,6 +654,7 @@ def compute_single_reflector_color(
         qe_data: Quantum efficiency data
         illuminant: Illuminant curve
         channel_mixer: Optional channel mixer settings for color manipulation
+        white_balance_gains: Pre-computed white balance gains from app state
         
     Returns:
         Array with single RGB pixel value or None if computation failed
@@ -613,7 +668,7 @@ def compute_single_reflector_color(
     
     # Compute color for the selected reflector
     reflector = reflector_matrix[selected_idx]
-    color = compute_reflector_color(reflector, transmission, qe_data, illuminant, channel_mixer)
+    color = compute_reflector_color(reflector, transmission, qe_data, illuminant, channel_mixer, white_balance_gains)
     
     # Replace any NaN values with zeros
     color = np.nan_to_num(color)

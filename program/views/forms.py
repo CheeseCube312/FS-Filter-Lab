@@ -11,7 +11,7 @@ from typing import Dict, List, Tuple, Any, Optional
 
 # Local imports
 from models.constants import INTERP_GRID, UI_BUTTONS, UI_WARNING_MESSAGES, OUTPUT_FOLDERS
-from views.ui_utils import is_dark_color, is_valid_hex_color, handle_error
+from views.ui_utils import is_dark_color, is_valid_hex_color, handle_error, render_filter_card
 from services.visualization import create_sparkline_plot
 
 # Cache the sparkline plot to improve performance when toggling filter details
@@ -195,24 +195,11 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
         number = row["Filter Number"]
         name = row["Filter Name"]
         brand = row["Manufacturer"]
-        text_color = "#FFF" if is_dark_color(hex_color) else "#000"
 
         with st.container():
             cols = st.columns([6, 1])
             with cols[0]:
-                st.markdown(f"""
-                    <div style="
-                        background-color: {hex_color};
-                        color: {text_color};
-                        padding: 8px 12px;
-                        border-radius: 6px;
-                        font-weight: 600;
-                        font-size: 1rem;
-                        margin-bottom: 0;
-                    ">
-                        {number} — {name} — {brand} 
-                    </div>
-                """, unsafe_allow_html=True)
+                render_filter_card(hex_color, f"{number} — {name} — {brand}")
 
             toggle_key = f"filter_toggle_{idx}"
             with cols[1]:
@@ -261,13 +248,123 @@ def advanced_filter_search(df: pd.DataFrame, filter_matrix: np.ndarray) -> None:
             st.rerun()
 
 
+# -- Advanced Reflector Search UI -----------------------------------------
+
+def filter_reflectors_by_column(df: pd.DataFrame, column: str, values: List[str]) -> pd.DataFrame:
+    """Filter DataFrame by values in a column."""
+    if not values:
+        return df
+    return df[df[column].isin(values)]
+
+
+def advanced_reflector_search(df: pd.DataFrame, reflector_matrix: np.ndarray, app_state) -> None:
+    """
+    Display advanced reflector search interface with progressive filtering.
+    
+    Args:
+        df: DataFrame containing reflector metadata
+        reflector_matrix: Matrix of reflector spectral data
+        app_state: Application state manager for default list management
+    """
+    if not st.session_state.get("show_reflector_search", False):
+        return
+
+    st.markdown("### Advanced Reflector Search")
+    st.markdown("Filter reflectors by metadata, then add to your default list.")
+
+    with st.form("refl_search_form"):
+        cols = st.columns([2, 2, 2, 1])
+        
+        # Get unique values for each filter column (only non-empty)
+        orgs = sorted([x for x in df["Organization"].unique() if x])
+        packages = sorted([x for x in df["Package Title"].unique() if x])
+        targets = sorted([x for x in df["Target Type"].unique() if x])
+        
+        selected_orgs = cols[0].multiselect("Organization", orgs)
+        selected_packages = cols[1].multiselect("Package/Dataset", packages)
+        selected_targets = cols[2].multiselect("Target Type", targets)
+        
+        with cols[3]:
+            st.markdown("<div style='margin-top: 28px'></div>", unsafe_allow_html=True)
+            apply_clicked = st.form_submit_button(UI_BUTTONS['apply'])
+
+    if apply_clicked:
+        st.session_state.update({
+            "refl_filters_applied": True,
+            "refl_orgs": selected_orgs,
+            "refl_packages": selected_packages,
+            "refl_targets": selected_targets
+        })
+
+    # Get filter state
+    selected_orgs = st.session_state.get("refl_orgs", [])
+    selected_packages = st.session_state.get("refl_packages", [])
+    selected_targets = st.session_state.get("refl_targets", [])
+
+    # Apply progressive filtering
+    filtered = df.copy()
+    if selected_orgs:
+        filtered = filter_reflectors_by_column(filtered, "Organization", selected_orgs)
+    if selected_packages:
+        filtered = filter_reflectors_by_column(filtered, "Package Title", selected_packages)
+    if selected_targets:
+        filtered = filter_reflectors_by_column(filtered, "Target Type", selected_targets)
+
+    st.markdown("---")
+    st.write(f"**{len(filtered)} reflectors found:**")
+
+    # Display filtered results
+    for idx, row in filtered.iterrows():
+        source_file = row["Source File"]
+        is_default = app_state.is_default_reflector(source_file)
+        
+        # Build display info
+        name = row["Name"]
+        org = row["Organization"] or row["Source Folder"]
+        target_type = row["Target Type"]
+        
+        with st.container():
+            cols = st.columns([5, 1, 1])
+            
+            with cols[0]:
+                # Display name and metadata
+                meta_parts = [x for x in [org, target_type] if x]
+                meta_str = " | ".join(meta_parts) if meta_parts else ""
+                
+                st.markdown(f"**{name}**")
+                if meta_str:
+                    st.caption(meta_str)
+            
+            with cols[1]:
+                show_details = st.toggle("Details", key=f"refl_toggle_{idx}", label_visibility="collapsed")
+            
+            with cols[2]:
+                # Add/Remove from defaults button
+                if is_default:
+                    if st.button("✓", key=f"refl_remove_{idx}", help="Remove from defaults"):
+                        app_state.remove_from_default_reflectors(source_file)
+                        st.rerun()
+                else:
+                    if st.button("+", key=f"refl_add_{idx}", help="Add to defaults"):
+                        app_state.add_to_default_reflectors(source_file)
+                        st.rerun()
+            
+            if show_details:
+                # Show sparkline
+                fig = cached_create_sparkline_plot(INTERP_GRID, reflector_matrix[idx, :], color="#4CAF50")
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    if st.button(UI_BUTTONS['done'], key="refl_search_done"):
+        # Signal that we want to close the search - use a separate state key
+        st.session_state["close_reflector_search"] = True
+        st.rerun()
+
+
 # -- Import UI -----------------------------------------
 
 def import_data_form() -> None:
     """Display the data import form with tabs for different data types."""
-    """
-    Display data import UI with all import options.
-    """
     st.markdown("---")
     st.subheader("Import Data")
     
@@ -289,7 +386,6 @@ def import_data_form() -> None:
 
 def import_filter_tab():
     """Display the filter data import interface."""
-    """Filter import interface."""
     from services.importing import import_filter_from_csv
     
     uploaded_file = st.file_uploader(
@@ -496,16 +592,25 @@ def import_reflectance_tab():
                 
                 # Column selection for naming/search
                 name_column = None
+                relevant_metadata_cols = []
                 if metadata_columns:
-                    st.write("**Name Column Selection:**")
+                    st.write("**Column Selection:**")
                     name_column = st.selectbox(
-                        "Choose column for spectrum names in dropdown menu:",
+                        "Choose column for spectrum names:",
                         options=["None"] + metadata_columns,
                         index=0,
-                        help="Select which CSV column should be used to name spectra in the application's dropdown menus. This will be stored as 'name_for_search' metadata."
+                        help="Select which CSV column should be used to name spectra. The column NAME will be stored, not the value."
                     )
                     if name_column == "None":
                         name_column = None
+                    
+                    # Column selection for relevant metadata display
+                    relevant_metadata_cols = st.multiselect(
+                        "Relevant metadata for Surface Color Preview:",
+                        options=metadata_columns,
+                        default=[],
+                        help="Choose which metadata columns should be displayed in Surface Color Preview"
+                    )
                 
                 # API URL input for enhanced metadata
                 api_url = st.text_input(
@@ -546,7 +651,8 @@ def import_reflectance_tab():
                                 tmp_file_path, 
                                 output_dir, 
                                 api_url.strip() if api_url.strip() else None,
-                                name_column
+                                name_column,
+                                relevant_metadata_cols
                             )
                             
                             # Clean up temp file

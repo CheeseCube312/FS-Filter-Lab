@@ -237,6 +237,7 @@ def fetch_ecosis_api_metadata(api_url: str) -> Tuple[bool, Optional[Dict[str, An
 def extract_attribution_info(api_metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract key attribution and metadata information from ECOSIS API response.
+    Enhanced to capture comprehensive scientific metadata including DOI, publications, and funding.
     
     Args:
         api_metadata: Full API metadata dictionary
@@ -286,6 +287,104 @@ def extract_attribution_info(api_metadata: Dict[str, Any]) -> Dict[str, Any]:
         'instrument_model': ', '.join(api_metadata.get('Instrument Model', [])) if isinstance(api_metadata.get('Instrument Model'), list) else api_metadata.get('Instrument Model', ''),
     }
     
+    # === ENHANCED SCIENTIFIC METADATA ===
+    
+    # DOI and scientific citation
+    if 'doi' in ecosis_data:
+        doi = ecosis_data['doi']
+        attribution['doi'] = doi
+        # Create clickable DOI URL for scientific access
+        if doi.startswith('doi:'):
+            doi_id = doi[4:]  # Remove 'doi:' prefix
+            attribution['doi_url'] = f"https://doi.org/{doi_id}"
+    
+    # Linked publications and supplementary materials
+    if 'linked_data' in ecosis_data:
+        linked_data = ecosis_data['linked_data']
+        if isinstance(linked_data, list) and linked_data:
+            publication_links = []
+            for link in linked_data:
+                if isinstance(link, dict) and 'url' in link and 'label' in link:
+                    publication_links.append(f"{link['label']}: {link['url']}")
+            if publication_links:
+                attribution['related_publications'] = ' | '.join(publication_links)
+    
+    # Enhanced funding information
+    funding_grants = api_metadata.get('Funding Source Grant Number', [])
+    if isinstance(funding_grants, list) and funding_grants:
+        attribution['funding_grant_numbers'] = ', '.join(funding_grants)
+    elif isinstance(funding_grants, str) and funding_grants:
+        attribution['funding_grant_numbers'] = funding_grants
+    
+    # NASA GCMD Keywords for scientific discoverability
+    nasa_keywords = api_metadata.get('NASA GCMD Keywords', [])
+    if isinstance(nasa_keywords, list) and nasa_keywords:
+        attribution['nasa_gcmd_keywords'] = ', '.join(nasa_keywords)
+    elif isinstance(nasa_keywords, str) and nasa_keywords:
+        attribution['nasa_gcmd_keywords'] = nasa_keywords
+    
+    # Expanded methodological metadata
+    acquisition_method = api_metadata.get('Acquisition Method', [])
+    if isinstance(acquisition_method, list) and acquisition_method:
+        attribution['acquisition_method'] = acquisition_method[0]
+    elif isinstance(acquisition_method, str):
+        attribution['acquisition_method'] = acquisition_method
+    
+    foreoptic_type = api_metadata.get('Foreoptic Type', [])
+    if isinstance(foreoptic_type, list) and foreoptic_type:
+        attribution['foreoptic_type'] = foreoptic_type[0]
+    elif isinstance(foreoptic_type, str):
+        attribution['foreoptic_type'] = foreoptic_type
+    
+    light_source = api_metadata.get('Light Source', [])
+    if isinstance(light_source, list) and light_source:
+        attribution['light_source'] = light_source[0]
+    elif isinstance(light_source, str):
+        attribution['light_source'] = light_source
+    
+    # Enhanced sample characteristics
+    target_status = api_metadata.get('Target Status', [])
+    if isinstance(target_status, list) and target_status:
+        attribution['target_status'] = target_status[0]
+    elif isinstance(target_status, str):
+        attribution['target_status'] = target_status
+    
+    ecosystem_type = api_metadata.get('Ecosystem Type', [])
+    if isinstance(ecosystem_type, list) and ecosystem_type:
+        attribution['ecosystem_type'] = ecosystem_type[0]
+    elif isinstance(ecosystem_type, str):
+        attribution['ecosystem_type'] = ecosystem_type
+    
+    measurement_venue = api_metadata.get('Measurement Venue', [])
+    if isinstance(measurement_venue, list) and measurement_venue:
+        attribution['measurement_venue'] = measurement_venue[0]
+    elif isinstance(measurement_venue, str):
+        attribution['measurement_venue'] = measurement_venue
+    
+    # Processing information for data provenance
+    processing_flags = []
+    for processing_field in ['Processing Averaged', 'Processing Interpolated', 'Processing Resampled']:
+        proc_value = api_metadata.get(processing_field, [])
+        if isinstance(proc_value, list) and proc_value:
+            processing_flags.append(f"{processing_field.replace('Processing ', '')}: {proc_value[0]}")
+        elif isinstance(proc_value, str) and proc_value:
+            processing_flags.append(f"{processing_field.replace('Processing ', '')}: {proc_value}")
+    
+    if processing_flags:
+        attribution['processing_info'] = ' | '.join(processing_flags)
+    
+    # Temporal metadata for data context
+    measurement_date = api_metadata.get('Measurement Date', [])
+    if isinstance(measurement_date, list) and measurement_date:
+        # If multiple dates, show range
+        dates = sorted([d for d in measurement_date if d])
+        if len(dates) == 1:
+            attribution['measurement_date'] = dates[0]
+        elif len(dates) > 1:
+            attribution['measurement_date'] = f"{dates[0]} to {dates[-1]}"
+    elif isinstance(measurement_date, str) and measurement_date:
+        attribution['measurement_date'] = measurement_date
+    
     # Clean up empty strings
     attribution = {k: v for k, v in attribution.items() if v and str(v).strip()}
     
@@ -326,7 +425,7 @@ def get_ecosis_csv_metadata_columns(file_path: str) -> List[str]:
         return []
 
 
-def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = None, name_column: Optional[str] = None) -> List[str]:
+def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = None, name_column: Optional[str] = None, relevant_metadata: Optional[List[str]] = None) -> List[str]:
     """
     Import ECOSIS CSV file directly. User explicitly chooses this format.
     
@@ -334,7 +433,8 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
         file_path: Path to ECOSIS CSV file
         output_dir: Directory to save processed files
         api_url: Optional ECOSIS API URL for metadata enhancement
-        name_column: Optional column name to use for search names
+        name_column: Optional column name to use for search names (stores column name, not value)
+        relevant_metadata: Optional list of column names for Surface Color Preview display
         
     Returns:
         List of created file paths
@@ -464,28 +564,71 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
                         rows.append(f"# {col}\t{value}")
                 rows.append("#")  # Blank comment line
             
-            # Add name_for_search field if user selected a column
+            # Add name_for_search field if user selected a column (store column name, not value)
             if name_column and name_column in metadata_cols:
-                search_name = row[name_column] if pd.notna(row[name_column]) and row[name_column] != '' else ''
-                if search_name:
-                    rows.append(f"# name_for_search\t{search_name}")
+                rows.append(f"# name_for_search	{name_column}")
+                rows.append("#")  # Blank comment line
+            
+            # Add relevant_metadata field if user selected columns (store column names, not values)
+            if relevant_metadata:
+                # Only include columns that exist in this CSV file
+                valid_relevant = [col for col in relevant_metadata if col in metadata_cols]
+                if valid_relevant:
+                    relevant_str = "|".join(valid_relevant)  # Join multiple column names with |
+                    rows.append(f"# relevant_metadata	{relevant_str}")
                     rows.append("#")  # Blank comment line
             
             # Add API attribution as comments if available
             if api_attribution:
                 rows.append("# Dataset Attribution (from ECOSIS API):")
-                # Include key attribution fields
+                # Include comprehensive attribution fields
                 key_fields = [
+                    # Core identification
                     ('Organization', 'organization'),
-                    ('Author', 'author'),  
+                    ('Package Title', 'package_title'),
+                    ('Author', 'author'),
                     ('Year', 'year'),
                     ('License', 'license'),
+                    
+                    # Scientific citation and provenance
+                    ('DOI', 'doi'),
+                    ('DOI URL', 'doi_url'),
                     ('Citation', 'citation'),
-                    ('Instrument', 'instrument_model'),
-                    ('Manufacturer', 'instrument_manufacturer'),
+                    ('Related Publications', 'related_publications'),
+                    
+                    # Funding and attribution
+                    ('Funding Source', 'funding_source'),
+                    ('Grant Numbers', 'funding_grant_numbers'),
+                    
+                    # Instrument and methodology
+                    ('Instrument Manufacturer', 'instrument_manufacturer'),
+                    ('Instrument Model', 'instrument_model'),
+                    ('Acquisition Method', 'acquisition_method'),
+                    ('Foreoptic Type', 'foreoptic_type'),
+                    ('Light Source', 'light_source'),
+                    
+                    # Sample characteristics
                     ('Target Type', 'target_type'),
+                    ('Target Status', 'target_status'),
+                    ('Ecosystem Type', 'ecosystem_type'),
+                    ('Measurement Venue', 'measurement_venue'),
+                    ('Measurement Date', 'measurement_date'),
+                    
+                    # Data characteristics
                     ('Measurement Units', 'measurement_units'),
-                    ('Package Title', 'package_title')
+                    ('Measurement Quantity', 'measurement_quantity'),
+                    ('Processing Info', 'processing_info'),
+                    ('Spectra Count', 'spectra_count'),
+                    
+                    # Scientific keywords
+                    ('Keywords', 'keywords'),
+                    ('NASA GCMD Keywords', 'nasa_gcmd_keywords'),
+                    ('Theme', 'theme'),
+                    
+                    # Dataset metadata
+                    ('Description', 'description'),
+                    ('Created', 'created'),
+                    ('Modified', 'modified'),
                 ]
                 
                 for display_name, key in key_fields:

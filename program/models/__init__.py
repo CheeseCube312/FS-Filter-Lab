@@ -18,5 +18,12 @@ from models.core import (
     
     # Reflector Models
     ReflectorSpectrum,
-    ReflectorCollection
+    ReflectorCollection,
+    
+    # Report/Chart Configuration
+    ReportConfig,
+    FilterData,
+    ComputationFunctions,
+    SensorData,
+    ChartConfig
 )

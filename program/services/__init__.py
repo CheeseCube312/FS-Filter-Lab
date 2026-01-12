@@ -11,100 +11,84 @@ Core Services:
 - state_manager: Unified application state management using Streamlit session state
 - visualization: Chart generation and report creation services
 
-Service Categories:
-
-Data Processing:
-- Filter transmission calculations and combination
-- RGB sensor response computations  
-- White balance and color correction
-- Deviation metrics and statistical analysis
-
-Visualization:
-- Interactive Plotly charts for real-time analysis
-- Static Matplotlib reports for documentation
-- Sparkline plots and color swatches
-- Multi-panel technical reports
-
-File Operations:
-- TSV/CSV import with format auto-detection
-- Spectral data interpolation and extrapolation
-- Cache management for performance optimization
-- PNG report generation and download
-
-The services layer maintains separation of concerns by keeping UI logic in views
-and data models in the models package, while providing all business logic here.
+Note: While this __init__.py provides re-exports for convenience, most code
+imports directly from submodules (e.g., `from services.calculations import ...`).
 """
-# Import general utilities
-from services.app_operations import (
-    sanitize_filename_component
-)
 
-# Import transmission services
+# =============================================================================
+# CALCULATION SERVICES
+# =============================================================================
 from services.calculations import (
-    # Calculation functions
+    # Transmission calculations
     compute_combined_transmission,
     compute_filter_transmission,
     compute_active_transmission,
     compute_effective_stops,
     calculate_transmission_deviation_metrics,
+    compute_selected_filter_indices,
     
-    # Formatting functions
-    format_transmission_metrics,
-    format_deviation_metrics,
-    format_white_balance_data,
-    
-    # Selection utilities
-    compute_selected_filter_indices
-)
-
-# Import color processing services
-from services.calculations import (
-    normalize_pixels,
+    # Color and RGB processing
     compute_rgb_response,
     compute_white_balance_gains,
+    compute_white_balance_gains_from_surface,
     compute_reflector_color,
     compute_reflector_preview_colors,
     find_vegetation_preview_reflectors,
     is_reflector_data_valid,
-    check_reflector_wavelength_validity
+    check_reflector_wavelength_validity,
+    
+    # Formatting utilities
+    format_transmission_metrics,
+    format_deviation_metrics,
+    format_white_balance_data,
 )
 
-# Import data loading services
+# =============================================================================
+# DATA LOADING SERVICES
+# =============================================================================
 from services.data import (
     load_filter_collection,
     load_quantum_efficiencies, 
     load_illuminant_collection,
-    load_reflector_collection
+    load_reflector_collection,
 )
 
-# Import plotting services
+# =============================================================================
+# VISUALIZATION SERVICES
+# =============================================================================
 from services.visualization import (
+    # Chart creation
     create_filter_response_plot,
     create_sensor_response_plot,
     create_sparkline_plot,
     create_qe_figure,
     create_illuminant_figure,
+    
+    # Curve utilities
     add_filter_curve_to_plotly,
-    add_filter_curve_to_matplotlib
+    add_filter_curve_to_matplotlib,
+    
+    # Report generation
+    generate_report_png,
 )
 
-# Import importing services
+# =============================================================================
+# IMPORT SERVICES
+# =============================================================================
 from services.importing import (
     import_filter_from_csv,
     import_illuminant_from_csv,
     import_qe_from_csv,
-    import_reflectance_absorption_from_csv
+    import_reflectance_absorption_from_csv,
 )
 
-# Import reporting services
-from services.visualization import (
-    generate_report_png
-)
-
-# Import application operations
+# =============================================================================
+# APPLICATION OPERATIONS
+# =============================================================================
 from services.app_operations import (
+    sanitize_filename_component,
     generate_application_report,
     generate_full_report,
     rebuild_application_cache,
-    generate_tsv_for_download
+    generate_tsv_for_download,
 )

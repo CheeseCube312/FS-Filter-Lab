@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 # Local imports
-from models.constants import DEFAULT_WB_GAINS, UI_SECTIONS, ERROR_MESSAGE_TEMPLATES
+from models.constants import UI_SECTIONS, ERROR_MESSAGE_TEMPLATES
 from models.core import TargetProfile
 from services.visualization import prepare_rgb_for_display
 
@@ -204,6 +204,91 @@ def is_valid_hex_color(hex_code: str) -> bool:
         True if the string is a valid hex color code
     """
     return isinstance(hex_code, str) and bool(re.fullmatch(r"#([0-9a-fA-F]{6})", hex_code))
+
+
+# ============================================================================
+# COLOR SWATCH RENDERING
+# ============================================================================
+
+def render_color_swatch(
+    hex_color: str, 
+    size: int = 40, 
+    border: bool = True
+) -> None:
+    """
+    Render a simple color swatch square.
+    
+    Args:
+        hex_color: Hex color code (e.g., "#FF5500")
+        size: Size of the swatch in pixels (default 40)
+        border: Whether to add a border (default True)
+    """
+    border_style = "border: 1px solid #ccc;" if border else ""
+    st.markdown(f"""
+        <div style="
+            background-color: {hex_color};
+            width: {size}px;
+            height: {size}px;
+            border-radius: 4px;
+            {border_style}
+        "></div>
+    """, unsafe_allow_html=True)
+
+
+def render_color_swatch_from_rgb(
+    rgb_color: np.ndarray, 
+    size: int = 40, 
+    border: bool = True
+) -> None:
+    """
+    Render a color swatch from RGB values (0-1 scale).
+    
+    Args:
+        rgb_color: RGB array with values in 0-1 range
+        size: Size of the swatch in pixels (default 40)
+        border: Whether to add a border (default True)
+    """
+    if rgb_color is None:
+        st.markdown("—")
+        return
+    
+    hex_color = "#{:02x}{:02x}{:02x}".format(
+        int(np.clip(rgb_color[0], 0, 1) * 255),
+        int(np.clip(rgb_color[1], 0, 1) * 255),
+        int(np.clip(rgb_color[2], 0, 1) * 255)
+    )
+    render_color_swatch(hex_color, size, border)
+
+
+def render_filter_card(
+    hex_color: str,
+    label: str,
+    text_color: Optional[str] = None
+) -> None:
+    """
+    Render a filter card with colored background and label.
+    
+    Args:
+        hex_color: Background hex color code
+        label: Text to display on the card
+        text_color: Text color (auto-detected if None)
+    """
+    if text_color is None:
+        text_color = "#FFF" if is_dark_color(hex_color) else "#000"
+    
+    st.markdown(f"""
+        <div style="
+            background-color: {hex_color};
+            color: {text_color};
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 0;
+        ">
+            {label}
+        </div>
+    """, unsafe_allow_html=True)
 
 
 

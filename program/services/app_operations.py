@@ -48,7 +48,8 @@ from services.data import (
     load_quantum_efficiencies, 
     load_illuminant_collection,
     load_reflector_collection,
-    create_empty_filter_collection
+    create_empty_filter_collection,
+    create_empty_reflector_collection
 )
 from views.ui_utils import try_operation, handle_error
 from services.calculations import (
@@ -158,7 +159,7 @@ def initialize_application_data():
     reflector_collection = try_operation(
         load_reflector_collection,
         "Failed to load reflector collection",
-        default_value=ReflectorCollection([], np.array([]))
+        default_value=create_empty_reflector_collection()
     )
     
     return {

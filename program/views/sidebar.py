@@ -7,7 +7,10 @@ filter multipliers, and extras (illuminant, QE, target).
 # Third-party imports
 import streamlit as st
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from services.state_manager import StateManager
 
 # Local imports
 from models.constants import (
@@ -87,9 +90,8 @@ def analysis_setup(
     camera_keys: List[str],
     qe_data: Dict[str, Dict[str, np.ndarray]],
     default_camera_key: str,
-    filter_collection: FilterCollection,
-    reflector_collection: Any
-) -> Tuple[Optional[str], Optional[np.ndarray], Optional[Dict[str, np.ndarray]], Optional[str], Optional[TargetProfile], Optional[int]]:
+    filter_collection: FilterCollection
+) -> Tuple[Optional[str], Optional[np.ndarray], Optional[Dict[str, np.ndarray]], Optional[str], Optional[TargetProfile]]:
     """
     UI component for analysis setup (illuminant, QE, target).
     
@@ -100,10 +102,9 @@ def analysis_setup(
         qe_data: Dictionary of QE data by camera key
         default_camera_key: Default camera key
         filter_collection: Collection of available filters
-        reflector_collection: Collection of available reflectors
     
     Returns:
-        Tuple of (illuminant_name, illuminant, qe, camera_name, target_profile, selected_reflector_idx)
+        Tuple of (illuminant_name, illuminant, qe, camera_name, target_profile)
     """
     # --- Illuminant Selector ---
     if illuminants:
@@ -142,31 +143,11 @@ def analysis_setup(
             values=filter_obj.transmission,  # Keep 0-1 scale consistent with filters
             valid=~np.isnan(filter_obj.transmission)
         )
-    # --- Reflector Spectrum Selector ---
-    selected_reflector_idx = None
-    if reflector_collection and hasattr(reflector_collection, "reflectors") and reflector_collection.reflectors:
-        reflector_names = [r.name for r in reflector_collection.reflectors]
-        # Add "None" option to allow hiding the single reflector preview
-        options = ["None"] + list(range(len(reflector_names)))
-        format_func = lambda idx: "None" if idx == "None" else reflector_names[idx]
-        
-        selection = st.selectbox(
-            UI_LABELS['surface_reflectance'],
-            options=options,
-            format_func=format_func,
-            index=0,  # Default to "None"
-            key="selected_reflector_idx"
-        )
-        
-        # Convert "None" selection to None, keep numeric indices as-is
-        selected_reflector_idx = None if selection == "None" else selection
-    else:
-        show_info_message(UI_INFO_MESSAGES['no_reflectors'])
 
-    return selected_illum_name, selected_illum, current_qe, selected_camera, target_profile, selected_reflector_idx
+    return selected_illum_name, selected_illum, current_qe, selected_camera, target_profile
 
 
-def render_sidebar(app_state, data):
+def render_sidebar(app_state: "StateManager", data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Render the application sidebar with controls and settings.
     
@@ -202,10 +183,10 @@ def render_sidebar(app_state, data):
     
     # ========== 2. ANALYSIS SETUP (Collapsed by default) ==========
     with st.sidebar.expander(UI_SECTIONS['analysis_setup'], expanded=False):
-        selected_illum_name, selected_illum, current_qe, selected_camera, target_profile, selected_reflector_idx = analysis_setup(
+        selected_illum_name, selected_illum, current_qe, selected_camera, target_profile = analysis_setup(
             illuminants, illuminant_metadata,
             camera_keys, qe_data, default_key,
-            filter_collection, reflector_collection
+            filter_collection
         )
     
     # Update state
@@ -222,10 +203,22 @@ def render_sidebar(app_state, data):
             st.session_state["show_advanced_search"] = False
             st.session_state.pop("_close_advanced_search", None)
         
-        # Advanced search toggle
+        # Advanced filter search toggle
         show_advanced_search = st.checkbox(
             UI_SECTIONS['show_advanced_search'], 
             key="show_advanced_search"
+        )
+        
+        # Advanced reflector search toggle
+        # Check for Done button click before creating checkbox
+        if st.session_state.get("close_reflector_search", False):
+            st.session_state["close_reflector_search"] = False
+            if "show_reflector_search" in st.session_state:
+                del st.session_state["show_reflector_search"]
+        
+        show_reflector_search = st.checkbox(
+            UI_SECTIONS['show_reflector_search'],
+            key="show_reflector_search"
         )
         
         # Channel mixer toggle

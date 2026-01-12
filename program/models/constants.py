@@ -85,13 +85,18 @@ TSV_COLUMNS = {
 METADATA_FIELDS = {
     'name': 'Name',                    # Display name for the spectrum
     'is_default': 'IsDefault',         # Vegetation preview default marker
-    'name_for_search': 'name_for_search',  # User-selected naming field
+    'name_for_search': 'name_for_search',  # Column name to use for naming (not the value)
+    'relevant_metadata': 'relevant_metadata',  # Column names for Surface Color Preview (pipe-separated)
     'species': 'species',              # Species name (ECOSIS data)
     'sample_type': 'sample_type',      # Sample type classification
     'collector': 'collector',          # Data collector information
     'package_title': 'Package Title'   # ECOSIS package title
 }
-
+# Surface Color Preview metadata display configuration
+SURFACE_COLOR_METADATA = {
+    'api_attribution_fields': ['Organization', 'Package Title', 'Citation', 'License', 'DOI URL'],
+    'fallback_fields': ['Target Type', 'Common Name', 'Latin Genus', 'Latin Species']
+}
 # =============================================================================
 # VEGETATION PREVIEW CONFIGURATION
 # =============================================================================
@@ -184,6 +189,8 @@ UI_BUTTONS = {
     'rebuild_cache': "Rebuild Cache",
     'csv_importers': "Import Data (CSV/ECOSIS)",
     'generate_full_report': "Generate Full Report",
+    'white_balance_from_surface': "WB from Surface",
+    'reset_white_balance': "Reset WB",
 }
 
 # Main section and panel titles
@@ -195,11 +202,13 @@ UI_SECTIONS = {
     'data_management': "Data Management",
     'vegetation_preview': "Vegetation Color Preview",
     'surface_preview': "Surface Preview",
-    'show_advanced_search': "Show Advanced Search",
+    'show_advanced_search': "Show Advanced Filter Search",
+    'show_reflector_search': "Show Reflector Search",
     'show_channel_mixer': "Show Channel Mixer",
     'sensor_response_channels': "Sensor-Weighted Response Channels",
     'display_options': "Display Options",
-    'reflectance_illuminant_curves': "Show Reflectance and Illuminant Curves"
+    'reflectance_illuminant_curves': "Show Reflectance and Illuminant Curves",
+    'default_reflector_list': "Surface Color Preview"
 }
 
 # Form field labels and control text
@@ -386,52 +395,5 @@ MPL_STYLE_CONFIG = {
     "legend.fontsize": 8,
 }
 
-# =============================================================================
-# DATA CLASSES FOR PARAMETER MANAGEMENT
-# =============================================================================
-
-@dataclass
-class ReportConfig:
-    """Configuration for report generation parameters."""
-    selected_filters: List[str]
-    current_qe: Dict[str, np.ndarray]
-    camera_name: str
-    illuminant_name: str
-    illuminant_curve: np.ndarray
-
-@dataclass
-class FilterData:
-    """Container for filter-related data structures."""
-    filter_matrix: np.ndarray
-    df: Any
-    display_to_index: Dict[str, int]
-    masks: np.ndarray
-    interp_grid: np.ndarray
-
-@dataclass  
-class ComputationFunctions:
-    """Container for computation functions used in report generation."""
-    compute_selected_indices_fn: Callable[[List[str]], List[int]]
-    compute_filter_transmission_fn: Callable[[List[int]], Tuple[np.ndarray, str, np.ndarray]]
-    compute_effective_stops_fn: Callable[[np.ndarray, np.ndarray, Optional[np.ndarray]], Tuple[float, float]]
-    compute_white_balance_gains_fn: Callable[[np.ndarray, Dict[str, np.ndarray], np.ndarray], Dict[str, float]]
-    add_curve_fn: Callable
-    sanitize_fn: Callable[[str], str]
-
-@dataclass
-class SensorData:
-    """Container for sensor-related parameters."""
-    sensor_qe: np.ndarray
-
-@dataclass
-class ChartConfig:
-    """Configuration for chart styling and layout parameters."""
-    title: str = ""
-    x_title: str = "Wavelength (nm)" 
-    y_title: str = "Response"
-    height: Optional[int] = None
-    template: str = "plotly_white"
-    hovermode: str = "x unified"
-    log_scale: bool = False
-    show_legend: bool = True
-    show_spectrum_strip: bool = True
+# Note: Data classes (ReportConfig, FilterData, ComputationFunctions, SensorData, ChartConfig)
+# have been moved to models/core.py for proper separation of concerns.
