@@ -32,7 +32,7 @@ import requests
 import json
 import logging
 import re
-from models.constants import INTERP_GRID, DATA_FOLDERS, METADATA_FIELDS, OUTPUT_FOLDERS
+from models.constants import INTERP_GRID, DATA_FOLDERS, METADATA_FIELDS, OUTPUT_FOLDERS, TSV_ATTRIBUTION_FIELDS
 
 # Configure logging for debugging import issues
 logger = logging.getLogger(__name__)
@@ -191,6 +191,14 @@ def sanitize_filename(name):
     return ''.join(c for c in name if c.isalnum() or c in (' ', '_')).rstrip().replace(' ', '_')
 
 
+def _get_api_field(data: Dict, key: str, join_list: bool = True) -> str:
+    """Extract a field from API metadata, handling list/string variations."""
+    value = data.get(key, [])
+    if isinstance(value, list):
+        return ', '.join(value) if join_list else (value[0] if value else '')
+    return str(value) if value else ''
+
+
 def fetch_ecosis_api_metadata(api_url: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
     """
     Fetch metadata from ECOSIS API endpoint.
@@ -237,7 +245,6 @@ def fetch_ecosis_api_metadata(api_url: str) -> Tuple[bool, Optional[Dict[str, An
 def extract_attribution_info(api_metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract key attribution and metadata information from ECOSIS API response.
-    Enhanced to capture comprehensive scientific metadata including DOI, publications, and funding.
     
     Args:
         api_metadata: Full API metadata dictionary
@@ -247,148 +254,83 @@ def extract_attribution_info(api_metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
     ecosis_data = api_metadata.get('ecosis', {})
     
+    # Build attribution from ecosis nested data and top-level metadata
     attribution = {
-        # Package identification
+        # From ecosis object
         'package_id': ecosis_data.get('package_id', ''),
         'package_name': ecosis_data.get('package_name', ''),
         'package_title': ecosis_data.get('package_title', ''),
-        'version': ecosis_data.get('version', ''),
-        
-        # Attribution
         'organization': ecosis_data.get('organization', ''),
-        'organization_id': ecosis_data.get('organization_id', ''),
         'description': ecosis_data.get('description', ''),
         'license': ecosis_data.get('license', ''),
         'created': ecosis_data.get('created', ''),
         'modified': ecosis_data.get('modified', ''),
-        
-        # Dataset information  
         'spectra_count': ecosis_data.get('spectra_count', 0),
         
-        # Author information from top-level metadata
-        'author': api_metadata.get('Author', [''])[0] if isinstance(api_metadata.get('Author'), list) else api_metadata.get('Author', ''),
-        'author_email': api_metadata.get('Author Email', [''])[0] if isinstance(api_metadata.get('Author Email'), list) else api_metadata.get('Author Email', ''),
-        'maintainer': api_metadata.get('Maintainer', [''])[0] if isinstance(api_metadata.get('Maintainer'), list) else api_metadata.get('Maintainer', ''),
-        'maintainer_email': api_metadata.get('Maintainer Email', [''])[0] if isinstance(api_metadata.get('Maintainer Email'), list) else api_metadata.get('Maintainer Email', ''),
+        # From top-level (use helper for list/string handling)
+        'author': _get_api_field(api_metadata, 'Author', join_list=False),
+        'citation': _get_api_field(api_metadata, 'Citation', join_list=False),
+        'funding_source': _get_api_field(api_metadata, 'Funding Source', join_list=False),
+        'year': _get_api_field(api_metadata, 'Year', join_list=False),
+        'keywords': _get_api_field(api_metadata, 'Keywords'),
+        'theme': _get_api_field(api_metadata, 'Theme'),
+        'target_type': _get_api_field(api_metadata, 'Target Type'),
+        'measurement_quantity': _get_api_field(api_metadata, 'Measurement Quantity'),
+        'measurement_units': _get_api_field(api_metadata, 'Measurement Units'),
+        'instrument_manufacturer': _get_api_field(api_metadata, 'Instrument Manufacturer'),
+        'instrument_model': _get_api_field(api_metadata, 'Instrument Model'),
+        'nasa_gcmd_keywords': _get_api_field(api_metadata, 'NASA GCMD Keywords'),
+        'funding_grant_numbers': _get_api_field(api_metadata, 'Funding Source Grant Number'),
         
-        # Scientific metadata
-        'citation': api_metadata.get('Citation', [''])[0] if isinstance(api_metadata.get('Citation'), list) else api_metadata.get('Citation', ''),
-        'funding_source': api_metadata.get('Funding Source', [''])[0] if isinstance(api_metadata.get('Funding Source'), list) else api_metadata.get('Funding Source', ''),
-        'year': api_metadata.get('Year', [''])[0] if isinstance(api_metadata.get('Year'), list) else api_metadata.get('Year', ''),
-        'keywords': ', '.join(api_metadata.get('Keywords', [])) if isinstance(api_metadata.get('Keywords'), list) else api_metadata.get('Keywords', ''),
-        'theme': ', '.join(api_metadata.get('Theme', [])) if isinstance(api_metadata.get('Theme'), list) else api_metadata.get('Theme', ''),
-        
-        # Technical metadata
-        'target_type': ', '.join(api_metadata.get('Target Type', [])) if isinstance(api_metadata.get('Target Type'), list) else api_metadata.get('Target Type', ''),
-        'measurement_quantity': ', '.join(api_metadata.get('Measurement Quantity', [])) if isinstance(api_metadata.get('Measurement Quantity'), list) else api_metadata.get('Measurement Quantity', ''),
-        'measurement_units': ', '.join(api_metadata.get('Measurement Units', [])) if isinstance(api_metadata.get('Measurement Units'), list) else api_metadata.get('Measurement Units', ''),
-        'wavelength_units': ', '.join(api_metadata.get('Wavelength Units', [])) if isinstance(api_metadata.get('Wavelength Units'), list) else api_metadata.get('Wavelength Units', ''),
-        'instrument_manufacturer': ', '.join(api_metadata.get('Instrument Manufacturer', [])) if isinstance(api_metadata.get('Instrument Manufacturer'), list) else api_metadata.get('Instrument Manufacturer', ''),
-        'instrument_model': ', '.join(api_metadata.get('Instrument Model', [])) if isinstance(api_metadata.get('Instrument Model'), list) else api_metadata.get('Instrument Model', ''),
+        # Single-value fields
+        'acquisition_method': _get_api_field(api_metadata, 'Acquisition Method', join_list=False),
+        'foreoptic_type': _get_api_field(api_metadata, 'Foreoptic Type', join_list=False),
+        'light_source': _get_api_field(api_metadata, 'Light Source', join_list=False),
+        'target_status': _get_api_field(api_metadata, 'Target Status', join_list=False),
+        'ecosystem_type': _get_api_field(api_metadata, 'Ecosystem Type', join_list=False),
+        'measurement_venue': _get_api_field(api_metadata, 'Measurement Venue', join_list=False),
     }
     
-    # === ENHANCED SCIENTIFIC METADATA ===
-    
-    # DOI and scientific citation
+    # DOI handling (with fallback to linked_data)
     if 'doi' in ecosis_data:
         doi = ecosis_data['doi']
         attribution['doi'] = doi
-        # Create clickable DOI URL for scientific access
         if doi.startswith('doi:'):
-            doi_id = doi[4:]  # Remove 'doi:' prefix
-            attribution['doi_url'] = f"https://doi.org/{doi_id}"
+            attribution['doi_url'] = f"https://doi.org/{doi[4:]}"
     
-    # Linked publications and supplementary materials
+    # Linked publications (and DOI fallback)
     if 'linked_data' in ecosis_data:
         linked_data = ecosis_data['linked_data']
         if isinstance(linked_data, list) and linked_data:
-            publication_links = []
+            links = []
             for link in linked_data:
                 if isinstance(link, dict) and 'url' in link and 'label' in link:
-                    publication_links.append(f"{link['label']}: {link['url']}")
-            if publication_links:
-                attribution['related_publications'] = ' | '.join(publication_links)
+                    links.append(f"{link['label']}: {link['url']}")
+                    # Fallback: extract DOI URL if none exists
+                    if 'doi_url' not in attribution and 'doi.org/' in link.get('url', ''):
+                        attribution['doi_url'] = link['url']
+            if links:
+                attribution['related_publications'] = ' | '.join(links)
     
-    # Enhanced funding information
-    funding_grants = api_metadata.get('Funding Source Grant Number', [])
-    if isinstance(funding_grants, list) and funding_grants:
-        attribution['funding_grant_numbers'] = ', '.join(funding_grants)
-    elif isinstance(funding_grants, str) and funding_grants:
-        attribution['funding_grant_numbers'] = funding_grants
+    # Processing info
+    proc_flags = []
+    for field in ['Processing Averaged', 'Processing Interpolated', 'Processing Resampled']:
+        val = _get_api_field(api_metadata, field, join_list=False)
+        if val:
+            proc_flags.append(f"{field.replace('Processing ', '')}: {val}")
+    if proc_flags:
+        attribution['processing_info'] = ' | '.join(proc_flags)
     
-    # NASA GCMD Keywords for scientific discoverability
-    nasa_keywords = api_metadata.get('NASA GCMD Keywords', [])
-    if isinstance(nasa_keywords, list) and nasa_keywords:
-        attribution['nasa_gcmd_keywords'] = ', '.join(nasa_keywords)
-    elif isinstance(nasa_keywords, str) and nasa_keywords:
-        attribution['nasa_gcmd_keywords'] = nasa_keywords
+    # Measurement date (handle range)
+    dates = api_metadata.get('Measurement Date', [])
+    if isinstance(dates, list) and dates:
+        dates = sorted([d for d in dates if d])
+        attribution['measurement_date'] = dates[0] if len(dates) == 1 else f"{dates[0]} to {dates[-1]}"
+    elif isinstance(dates, str) and dates:
+        attribution['measurement_date'] = dates
     
-    # Expanded methodological metadata
-    acquisition_method = api_metadata.get('Acquisition Method', [])
-    if isinstance(acquisition_method, list) and acquisition_method:
-        attribution['acquisition_method'] = acquisition_method[0]
-    elif isinstance(acquisition_method, str):
-        attribution['acquisition_method'] = acquisition_method
-    
-    foreoptic_type = api_metadata.get('Foreoptic Type', [])
-    if isinstance(foreoptic_type, list) and foreoptic_type:
-        attribution['foreoptic_type'] = foreoptic_type[0]
-    elif isinstance(foreoptic_type, str):
-        attribution['foreoptic_type'] = foreoptic_type
-    
-    light_source = api_metadata.get('Light Source', [])
-    if isinstance(light_source, list) and light_source:
-        attribution['light_source'] = light_source[0]
-    elif isinstance(light_source, str):
-        attribution['light_source'] = light_source
-    
-    # Enhanced sample characteristics
-    target_status = api_metadata.get('Target Status', [])
-    if isinstance(target_status, list) and target_status:
-        attribution['target_status'] = target_status[0]
-    elif isinstance(target_status, str):
-        attribution['target_status'] = target_status
-    
-    ecosystem_type = api_metadata.get('Ecosystem Type', [])
-    if isinstance(ecosystem_type, list) and ecosystem_type:
-        attribution['ecosystem_type'] = ecosystem_type[0]
-    elif isinstance(ecosystem_type, str):
-        attribution['ecosystem_type'] = ecosystem_type
-    
-    measurement_venue = api_metadata.get('Measurement Venue', [])
-    if isinstance(measurement_venue, list) and measurement_venue:
-        attribution['measurement_venue'] = measurement_venue[0]
-    elif isinstance(measurement_venue, str):
-        attribution['measurement_venue'] = measurement_venue
-    
-    # Processing information for data provenance
-    processing_flags = []
-    for processing_field in ['Processing Averaged', 'Processing Interpolated', 'Processing Resampled']:
-        proc_value = api_metadata.get(processing_field, [])
-        if isinstance(proc_value, list) and proc_value:
-            processing_flags.append(f"{processing_field.replace('Processing ', '')}: {proc_value[0]}")
-        elif isinstance(proc_value, str) and proc_value:
-            processing_flags.append(f"{processing_field.replace('Processing ', '')}: {proc_value}")
-    
-    if processing_flags:
-        attribution['processing_info'] = ' | '.join(processing_flags)
-    
-    # Temporal metadata for data context
-    measurement_date = api_metadata.get('Measurement Date', [])
-    if isinstance(measurement_date, list) and measurement_date:
-        # If multiple dates, show range
-        dates = sorted([d for d in measurement_date if d])
-        if len(dates) == 1:
-            attribution['measurement_date'] = dates[0]
-        elif len(dates) > 1:
-            attribution['measurement_date'] = f"{dates[0]} to {dates[-1]}"
-    elif isinstance(measurement_date, str) and measurement_date:
-        attribution['measurement_date'] = measurement_date
-    
-    # Clean up empty strings
-    attribution = {k: v for k, v in attribution.items() if v and str(v).strip()}
-    
-    return attribution
+    # Remove empty values
+    return {k: v for k, v in attribution.items() if v and str(v).strip()}
 
 
 # ============================================================================
@@ -451,6 +393,12 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
             else:
                 logger.warning(f"Failed to fetch API metadata: {error_msg}")
                 # Continue without API metadata
+        
+        # Always add source file and API URL to attribution (even if API fetch failed)
+        source_filename = os.path.basename(file_path)
+        api_attribution['source_csv_file'] = source_filename
+        if api_url:
+            api_attribution['api_url'] = api_url
         
         df = pd.read_csv(file_path)
         
@@ -581,60 +529,9 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
             # Add API attribution as comments if available
             if api_attribution:
                 rows.append("# Dataset Attribution (from ECOSIS API):")
-                # Include comprehensive attribution fields
-                key_fields = [
-                    # Core identification
-                    ('Organization', 'organization'),
-                    ('Package Title', 'package_title'),
-                    ('Author', 'author'),
-                    ('Year', 'year'),
-                    ('License', 'license'),
-                    
-                    # Scientific citation and provenance
-                    ('DOI', 'doi'),
-                    ('DOI URL', 'doi_url'),
-                    ('Citation', 'citation'),
-                    ('Related Publications', 'related_publications'),
-                    
-                    # Funding and attribution
-                    ('Funding Source', 'funding_source'),
-                    ('Grant Numbers', 'funding_grant_numbers'),
-                    
-                    # Instrument and methodology
-                    ('Instrument Manufacturer', 'instrument_manufacturer'),
-                    ('Instrument Model', 'instrument_model'),
-                    ('Acquisition Method', 'acquisition_method'),
-                    ('Foreoptic Type', 'foreoptic_type'),
-                    ('Light Source', 'light_source'),
-                    
-                    # Sample characteristics
-                    ('Target Type', 'target_type'),
-                    ('Target Status', 'target_status'),
-                    ('Ecosystem Type', 'ecosystem_type'),
-                    ('Measurement Venue', 'measurement_venue'),
-                    ('Measurement Date', 'measurement_date'),
-                    
-                    # Data characteristics
-                    ('Measurement Units', 'measurement_units'),
-                    ('Measurement Quantity', 'measurement_quantity'),
-                    ('Processing Info', 'processing_info'),
-                    ('Spectra Count', 'spectra_count'),
-                    
-                    # Scientific keywords
-                    ('Keywords', 'keywords'),
-                    ('NASA GCMD Keywords', 'nasa_gcmd_keywords'),
-                    ('Theme', 'theme'),
-                    
-                    # Dataset metadata
-                    ('Description', 'description'),
-                    ('Created', 'created'),
-                    ('Modified', 'modified'),
-                ]
-                
-                for display_name, key in key_fields:
+                for display_name, key in TSV_ATTRIBUTION_FIELDS:
                     if key in api_attribution and api_attribution[key]:
                         value = str(api_attribution[key])
-                        # Wrap long values
                         if len(value) > 100:
                             value = value[:100] + "..."
                         rows.append(f"# {display_name}\t{value}")
@@ -723,23 +620,10 @@ def import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
         wavelengths = raw_data.iloc[:, 0].dropna().values
         transmissions = raw_data.iloc[:, 1].dropna().values
 
-        # Validate data
-        if wavelengths.size == 0:
-            return False, "Wavelength column (first column) is empty or contains no valid numbers."
-            
-        if transmissions.size == 0:
-            return False, "Transmission column (second column) is empty or contains no valid numbers."
-            
-        if wavelengths.size != transmissions.size:
-            return False, f"Wavelength and transmission columns have different lengths ({wavelengths.size} vs {transmissions.size})."
-            
-        # Check wavelength range validity
-        min_wl, max_wl = wavelengths.min(), wavelengths.max()
-        if min_wl < 200 or max_wl > 2000:
-            return False, f"Wavelength range ({min_wl:.1f}-{max_wl:.1f} nm) seems invalid. Expected 200-2000 nm."
-            
-        if max_wl - min_wl < 50:
-            return False, f"Wavelength range too narrow ({min_wl:.1f}-{max_wl:.1f} nm). Need at least 50nm range."
+        # Validate wavelength data using common utility
+        is_valid, error_msg = validate_wavelength_data(wavelengths, transmissions, "transmission")
+        if not is_valid:
+            return False, error_msg
         
         # Validate transmission values (should be 0-100 or 0-1)
         trans_min, trans_max = transmissions.min(), transmissions.max()
@@ -796,8 +680,7 @@ def import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
         return False, str(e)
     except Exception as e:
         # Unexpected errors - log them for debugging
-        import logging
-        logging.exception(f"Unexpected error in filter import: {str(e)}")
+        logger.exception(f"Unexpected error in filter import: {str(e)}")
         return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
 
 # ============================================================================
@@ -835,23 +718,10 @@ def import_illuminant_from_csv(uploaded_file, description):
         wavelengths = raw_data.iloc[:, 0].dropna().values
         intensity = raw_data.iloc[:, 1].dropna().values
         
-        # Validate data
-        if wavelengths.size == 0:
-            return False, "Wavelength column (first column) is empty or contains no valid numbers."
-            
-        if intensity.size == 0:
-            return False, "Intensity column (second column) is empty or contains no valid numbers."
-            
-        if wavelengths.size != intensity.size:
-            return False, f"Wavelength and intensity columns have different lengths ({wavelengths.size} vs {intensity.size})."
-            
-        # Check wavelength range validity
-        min_wl, max_wl = wavelengths.min(), wavelengths.max()
-        if min_wl < 200 or max_wl > 2000:
-            return False, f"Wavelength range ({min_wl:.1f}-{max_wl:.1f} nm) seems invalid. Expected 200-2000 nm."
-            
-        if max_wl - min_wl < 50:
-            return False, f"Wavelength range too narrow ({min_wl:.1f}-{max_wl:.1f} nm). Need at least 50nm range."
+        # Validate wavelength data using common utility
+        is_valid, error_msg = validate_wavelength_data(wavelengths, intensity, "intensity")
+        if not is_valid:
+            return False, error_msg
         
         # Validate intensity values
         if intensity.min() < 0:
@@ -892,8 +762,7 @@ def import_illuminant_from_csv(uploaded_file, description):
         return False, str(e)
     except Exception as e:
         # Unexpected errors - log them for debugging
-        import logging
-        logging.exception(f"Unexpected error in illuminant import: {str(e)}")
+        logger.exception(f"Unexpected error in illuminant import: {str(e)}")
         return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
 
 # ============================================================================
@@ -937,29 +806,22 @@ def import_qe_from_csv(uploaded_file, brand, model):
         g_qe = raw_data.iloc[:, 2].dropna().values  
         b_qe = raw_data.iloc[:, 3].dropna().values
         
-        # Validate data
+        # Basic validation - trim to minimum size
         if wavelengths.size == 0:
-            return False, "Wavelength column (first column) is empty or contains no valid numbers."
+            return False, "Wavelength column is empty or contains no valid numbers."
             
         min_size = min(wavelengths.size, r_qe.size, g_qe.size, b_qe.size)
         if min_size == 0:
             return False, "One or more QE columns (R, G, B) are empty or contain no valid numbers."
             
-        # Trim arrays to same size
-        wavelengths = wavelengths[:min_size]
-        r_qe = r_qe[:min_size]
-        g_qe = g_qe[:min_size]
-        b_qe = b_qe[:min_size]
+        wavelengths, r_qe, g_qe, b_qe = wavelengths[:min_size], r_qe[:min_size], g_qe[:min_size], b_qe[:min_size]
         
-        # Check wavelength range validity
-        min_wl, max_wl = wavelengths.min(), wavelengths.max()
-        if min_wl < 200 or max_wl > 2000:
-            return False, f"Wavelength range ({min_wl:.1f}-{max_wl:.1f} nm) seems invalid. Expected 200-2000 nm."
-            
-        if max_wl - min_wl < 50:
-            return False, f"Wavelength range too narrow ({min_wl:.1f}-{max_wl:.1f} nm). Need at least 50nm range."
+        # Validate wavelength range
+        is_valid, error_msg = validate_wavelength_data(wavelengths, r_qe, "QE")
+        if not is_valid:
+            return False, error_msg
         
-        # Validate QE values
+        # Validate QE values for each channel
         for channel, values in [("R", r_qe), ("G", g_qe), ("B", b_qe)]:
             if values.min() < 0:
                 return False, f"{channel} channel QE values cannot be negative (min: {values.min():.3f})."
@@ -1001,8 +863,7 @@ def import_qe_from_csv(uploaded_file, brand, model):
         return False, str(e)
     except Exception as e:
         # Unexpected errors - log them for debugging
-        import logging
-        logging.exception(f"Unexpected error in QE import: {str(e)}")
+        logger.exception(f"Unexpected error in QE import: {str(e)}")
         return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
 
 # ============================================================================
@@ -1044,33 +905,19 @@ def import_reflectance_absorption_from_csv(uploaded_file, meta, extrap_lower, ex
         return False, str(e)
     except Exception as e:
         # Unexpected errors - log them for debugging
-        import logging
-        logging.exception(f"Unexpected error in reflectance import: {str(e)}")
+        logger.exception(f"Unexpected error in reflectance import: {str(e)}")
         return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
 
 
 def _import_standard_reflectance(raw_data, meta, extrap_lower, extrap_upper):
-    """Import standard 2-column reflectance data (existing functionality)."""
+    """Import standard 2-column reflectance data."""
     wavelengths = raw_data.iloc[:, 0].dropna().values
     values = raw_data.iloc[:, 1].dropna().values
 
-    # Validate data
-    if wavelengths.size == 0:
-        return False, "Wavelength column (first column) is empty or contains no valid numbers."
-        
-    if values.size == 0:
-        return False, "Value column (second column) is empty or contains no valid numbers."
-        
-    if wavelengths.size != values.size:
-        return False, f"Wavelength and value columns have different lengths ({wavelengths.size} vs {values.size})."
-        
-    # Check wavelength range validity
-    min_wl, max_wl = wavelengths.min(), wavelengths.max()
-    if min_wl < 200 or max_wl > 2000:
-        return False, f"Wavelength range ({min_wl:.1f}-{max_wl:.1f} nm) seems invalid. Expected 200-2000 nm."
-        
-    if max_wl - min_wl < 50:
-        return False, f"Wavelength range too narrow ({min_wl:.1f}-{max_wl:.1f} nm). Need at least 50nm range."
+    # Validate wavelength data using common utility
+    is_valid, error_msg = validate_wavelength_data(wavelengths, values, "reflectance")
+    if not is_valid:
+        return False, error_msg
 
     # Sort by wavelength
     sort_idx = np.argsort(wavelengths)
@@ -1091,23 +938,18 @@ def _import_standard_reflectance(raw_data, meta, extrap_lower, extrap_upper):
     if np.nanmax(interpolated) > 1.5:
         interpolated = interpolated / 100.0
 
-    # Round to 3 decimal places to avoid floating point precision issues
     interpolated = np.round(interpolated, 3)
 
-    # Create DataFrame with standard format
+    # Create DataFrame - metadata only in first row (efficient: no wasted arrays)
     data_type = meta.get("data_type", "Reflectance")
-    
-    # Create name and description arrays - only fill the first row, leave others empty
-    name_array = [""] * len(new_wavelengths)
-    description_array = [""] * len(new_wavelengths)
-    name_array[0] = meta.get("name", "Unknown")  # Only first row gets the name
-    description_array[0] = meta.get("description", "")  # Only first row gets the description
+    name = meta.get("name", "Unknown")
+    description = meta.get("description", "")
     
     output_df = pd.DataFrame({
         'Wavelength': new_wavelengths,
         data_type: interpolated,
-        'Name': name_array,
-        'Description': description_array
+        'Name': [name] + [""] * (len(new_wavelengths) - 1),
+        'Description': [description] + [""] * (len(new_wavelengths) - 1)
     })
 
     # Save file

@@ -92,11 +92,58 @@ METADATA_FIELDS = {
     'collector': 'collector',          # Data collector information
     'package_title': 'Package Title'   # ECOSIS package title
 }
+
 # Surface Color Preview metadata display configuration
 SURFACE_COLOR_METADATA = {
     'api_attribution_fields': ['Organization', 'Package Title', 'Citation', 'License', 'DOI URL'],
     'fallback_fields': ['Target Type', 'Common Name', 'Latin Genus', 'Latin Species']
 }
+
+# TSV attribution fields for ECOSIS imports (display_name, internal_key)
+TSV_ATTRIBUTION_FIELDS = [
+    # Core identification
+    ('Organization', 'organization'),
+    ('Package Title', 'package_title'),
+    ('Author', 'author'),
+    ('Year', 'year'),
+    ('License', 'license'),
+    # Scientific citation
+    ('DOI', 'doi'),
+    ('DOI URL', 'doi_url'),
+    ('Citation', 'citation'),
+    ('Related Publications', 'related_publications'),
+    # Funding
+    ('Funding Source', 'funding_source'),
+    ('Grant Numbers', 'funding_grant_numbers'),
+    # Instrument
+    ('Instrument Manufacturer', 'instrument_manufacturer'),
+    ('Instrument Model', 'instrument_model'),
+    ('Acquisition Method', 'acquisition_method'),
+    ('Foreoptic Type', 'foreoptic_type'),
+    ('Light Source', 'light_source'),
+    # Sample
+    ('Target Type', 'target_type'),
+    ('Target Status', 'target_status'),
+    ('Ecosystem Type', 'ecosystem_type'),
+    ('Measurement Venue', 'measurement_venue'),
+    ('Measurement Date', 'measurement_date'),
+    # Data characteristics
+    ('Measurement Units', 'measurement_units'),
+    ('Measurement Quantity', 'measurement_quantity'),
+    ('Processing Info', 'processing_info'),
+    ('Spectra Count', 'spectra_count'),
+    # Keywords
+    ('Keywords', 'keywords'),
+    ('NASA GCMD Keywords', 'nasa_gcmd_keywords'),
+    ('Theme', 'theme'),
+    # Dataset metadata
+    ('Description', 'description'),
+    ('Created', 'created'),
+    ('Modified', 'modified'),
+    # Import source
+    ('Source CSV File', 'source_csv_file'),
+    ('API URL', 'api_url'),
+]
 # =============================================================================
 # VEGETATION PREVIEW CONFIGURATION
 # =============================================================================
