@@ -4,4 +4,3 @@ __pycache__/
 .gitignore
 output/
 cache/
-data/
