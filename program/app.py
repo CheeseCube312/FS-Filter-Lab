@@ -1,17 +1,19 @@
 """
-FS FilterLab - Entry Point
+FS FilterLab — Entry Point
 ===================================
 Launch with:  python program/app.py
-   or from project root:  .venv/Scripts/python program/app.py
 
-NiceGUI application providing full CSS / layout control via Vue + Quasar.
+UI rebuild in progress (ui-rebuild branch). The previous views/ layer was
+removed in slice U1; slices U2–U6 rebuild the interface per UX_SPEC.md.
+This stub keeps the boot path (data load + state init) alive and renders a
+placeholder page.
 """
 import logging
 import sys
 from pathlib import Path
 
 # Ensure the program/ directory is on the import path so that
-# `from models.xxx import ...` etc. work regardless of working directory.
+# `from services.xxx import ...` works regardless of working directory.
 _program_dir = Path(__file__).resolve().parent
 if str(_program_dir) not in sys.path:
     sys.path.insert(0, str(_program_dir))
@@ -20,79 +22,36 @@ from nicegui import ui
 
 from services.app_operations import initialize_application_data
 from services.state_manager import AppState
-from views.sidebar import render_sidebar
-from views.main_content import render_main_content
-from views.actions import handle_app_actions
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    """Build the NiceGUI application UI."""
-
-    # 1. Load data
+    # 1. Load data — keeps the boot path exercised during the rebuild.
     data = initialize_application_data()
-    if not data:
-        @ui.page("/")
-        def error_page():
-            ui.label("Failed to load application data. Check data files and the terminal for errors.").classes(
-                "text-red-600 text-xl m-8"
-            )
-        ui.run(title="FS FilterLab — Error", host="127.0.0.1", port=8080, reload=False, show=True)
-        return
+    if data:
+        app_state = AppState()
+        app_state.seed_isdefault_reflectors(data.reflector_collection)
+    else:
+        logger.error("Failed to load application data; check the terminal output.")
 
-    # 2. State manager
-    app_state = AppState()
-
-    # 3. Seed IsDefault reflectors
-    app_state.seed_isdefault_reflectors(data.reflector_collection)
-
-    # ================================================================
-    # UI STRUCTURE — built per-page via @ui.page decorator
-    # ================================================================
-
+    # 2. Placeholder page until slice U2 lands the new shell.
     @ui.page("/")
     def index():
-        # Mutable container so _refresh can reference areas after assignment
-        page_state = {}
-
-        def _refresh():
-            """Rebuild both sidebar and main content from current state."""
-            render_sidebar(page_state["sidebar_container"], app_state, data, _refresh, _on_action)
-            render_main_content(page_state["main_area"], app_state, data, _refresh)
-
-        def _on_action(action_type: str, payload=None):
-            handle_app_actions(action_type, payload, app_state, data, _refresh)
-
-        # Page-level styles
-        ui.add_head_html('''
-        <style>
-            body { font-family: Inter, system-ui, sans-serif; }
-            /* Fix dropdown width and truncate long filter names */
-            .q-menu .q-item__label {
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-                max-width: 400px;
-            }
-            .q-menu {
-                max-width: 450px !important;
-            }
-        </style>
-        ''')
-
-        with ui.header().classes("items-center justify-between px-4 py-2 bg-blue-800"):
+        ui.add_head_html(
+            "<style>body { font-family: Inter, system-ui, sans-serif; }</style>"
+        )
+        with ui.header().classes("items-center px-4 py-2 bg-blue-800"):
             ui.label("FS FilterLab").classes("text-white text-lg font-bold")
-
-        drawer = ui.left_drawer(value=True, fixed=True).classes("bg-gray-50 p-2").style("width:380px")
-        with drawer:
-            page_state["sidebar_container"] = ui.column().classes("w-full gap-0")
-        render_sidebar(page_state["sidebar_container"], app_state, data, _refresh, _on_action)
-
-        # Main content area
-        page_state["main_area"] = ui.column().classes("w-full p-4")
-        render_main_content(page_state["main_area"], app_state, data, _refresh)
+        with ui.column().classes("w-full items-center pt-24 gap-2"):
+            ui.label("UI rebuild in progress").classes("text-2xl font-bold")
+            ui.label(
+                "The views layer was removed (slice U1) and is being rebuilt per "
+                "UX_SPEC.md (slices U2–U6). Data loading still works; run the "
+                "test suite from the program/ directory with: "
+                "python -m unittest discover -s tests -t ."
+            ).classes("text-sm text-gray-500 max-w-xl text-center")
 
     ui.run(
         title="FS FilterLab",
