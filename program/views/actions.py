@@ -241,6 +241,55 @@ def _reset_surface_wb(app_state: AppState, data: AppData, payload: Dict) -> Set[
 
 
 # ---------------------------------------------------------------------------
+# Film Match instrument (UX_SPEC.md §7.2)
+# ---------------------------------------------------------------------------
+
+_FILM_MATCH = {"film_match"}
+_MIXER = {"film_match", "sensor_response", "surfaces"}
+
+
+def _select_film_target(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    app_state.select_film_emulation_target(payload.get("name"), data.sensor_profiles)
+    return _FILM_MATCH
+
+
+def _set_film_wb(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    app_state.film_emulation_wb = bool(payload.get("value", False))
+    return _FILM_MATCH
+
+
+def _set_film_target_filters(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    app_state.film_emulation_filters = [str(v) for v in (payload.get("names") or [])]
+    return _FILM_MATCH
+
+
+def _set_mixer_enabled(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    mixer = app_state.channel_mixer
+    mixer.enabled = bool(payload.get("value", False))
+    app_state.channel_mixer = mixer
+    return _MIXER
+
+
+def _set_mixer_gain(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    field = payload.get("field")
+    if field not in {
+        "red_r", "red_g", "red_b", "green_r", "green_g", "green_b",
+        "blue_r", "blue_g", "blue_b",
+    }:
+        return set()
+    mixer = app_state.channel_mixer
+    setattr(mixer, field, float(payload.get("value", 0.0)))
+    app_state.channel_mixer = mixer
+    return _MIXER
+
+
+def _reset_mixer(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    from models.core import ChannelMixerSettings
+    app_state.channel_mixer = ChannelMixerSettings()
+    return _MIXER
+
+
+# ---------------------------------------------------------------------------
 # Data imports (ECOSIS commit path; other importers land with the Data shelf)
 # ---------------------------------------------------------------------------
 
@@ -295,6 +344,12 @@ _HANDLERS = {
     "wb_from_surface": _wb_from_surface,
     "reset_surface_wb": _reset_surface_wb,
     "import_ecosis": _import_ecosis,
+    "select_film_target": _select_film_target,
+    "set_film_wb": _set_film_wb,
+    "set_film_target_filters": _set_film_target_filters,
+    "set_mixer_enabled": _set_mixer_enabled,
+    "set_mixer_gain": _set_mixer_gain,
+    "reset_mixer": _reset_mixer,
     "run_report": _run_report,
     "reset_all": _reset_all,
 }

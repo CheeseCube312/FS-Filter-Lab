@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict
 from nicegui import ui
 
 from views.actions import handle_app_action
+from views.film_match import render_film_match
 from views.reference import render_reference
 from views.sensor_response import render_sensor_response
 from views.setup_rail import render_setup_rail
@@ -42,7 +43,7 @@ def build_page(app_state, data) -> None:
 
     @ui.refreshable
     def film_match_panel():
-        _placeholder("Film Match lands in slice U5 (target overlay + mixer, §7.2).")
+        render_film_match(ctx)
 
     @ui.refreshable
     def reference_panel():

@@ -881,3 +881,146 @@ def prepare_ecosis_preview(content: bytes, filename: str = "") -> EcosisPreviewV
         sample_names=samples, organizations=orgs,
     )
 
+
+# =============================================================================
+# FILM MATCH INSTRUMENT (UX_SPEC.md §7.2)
+# =============================================================================
+
+@dataclass
+class ChannelDeviationVM:
+    """Deviation readout for one channel (achieved vs film target)."""
+    channel: str
+    peak_wavelength: str
+    peak_ratio: str
+    rms_deviation: str
+
+
+@dataclass
+class FilmMatchVM:
+    """Everything the Film Match instrument renders (§7.2)."""
+    target_name: Optional[str]
+    overlay_fig: Optional[go.Figure]
+    deviations: List[ChannelDeviationVM]
+    note: Optional[str] = None
+
+
+def _peak_wavelength(curve: np.ndarray) -> Optional[int]:
+    valid = np.isfinite(curve)
+    if not valid.any():
+        return None
+    idx = int(np.nanargmax(np.where(valid, curve, -np.inf)))
+    return int(INTERP_GRID[idx])
+
+
+def _channel_deviation(
+    achieved: np.ndarray, target: np.ndarray
+) -> Tuple[Optional[int], float, float]:
+    """
+    Peak position of the achieved curve, achieved/target peak-height ratio,
+    and RMS deviation between peak-normalized curves (fraction 0-1).  Peak
+    normalization means only the channel *shape* and *ratio* are judged.
+    """
+    a = np.nan_to_num(np.asarray(achieved, dtype=float), nan=0.0)
+    t = np.nan_to_num(np.asarray(target, dtype=float), nan=0.0)
+    a_peak, t_peak = float(a.max()), float(t.max())
+    if a_peak <= 0 or t_peak <= 0:
+        return None, 0.0, 1.0
+    rms = float(np.sqrt(np.mean((a / a_peak - t / t_peak) ** 2)))
+    return _peak_wavelength(a), a_peak / t_peak, rms
+
+
+def _create_match_overlay_figure(
+    achieved: Dict[str, np.ndarray],
+    target: Dict[str, np.ndarray],
+    target_label: str,
+    target_is_bw: bool,
+) -> go.Figure:
+    fig = go.Figure()
+    for ch in ("R", "G", "B"):
+        curve = achieved.get(ch)
+        if curve is None:
+            continue
+        color = CHART_COLORS["rgb_colors"].get(ch, "gray")
+        fig.add_trace(go.Scatter(
+            x=INTERP_GRID, y=curve, mode="lines", name=f"{ch} achieved",
+            line=dict(color=color, width=2),
+        ))
+    if target_is_bw:
+        base = target.get("R")
+        if base is not None:
+            fig.add_trace(go.Scatter(
+                x=INTERP_GRID, y=base, mode="lines", name="Luminance (target)",
+                line=dict(color="#888888", width=2, dash="dash"),
+            ))
+    else:
+        for ch in ("R", "G", "B"):
+            curve = target.get(ch)
+            if curve is None:
+                continue
+            color = CHART_COLORS["rgb_colors"].get(ch, "gray")
+            fig.add_trace(go.Scatter(
+                x=INTERP_GRID, y=curve, mode="lines", name=f"{ch} target",
+                line=dict(color=color, width=2, dash="dash"),
+            ))
+    fig.update_layout(
+        title=f"Achieved vs target — {target_label}",
+        xaxis_title="Wavelength (nm)",
+        yaxis_title="Response (%)",
+        margin=dict(l=40, r=20, t=40, b=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def prepare_film_match(app_state: AppState, data: AppData) -> FilmMatchVM:
+    """Achieved-vs-target overlay + deviation metrics for the Film Match tab."""
+    film = app_state.film_emulation_profile
+    if film is None:
+        return FilmMatchVM(
+            target_name=None, overlay_fig=None, deviations=[],
+            note="Pick a film target above, then shape the achieved response "
+                 "with the filter stack and the channel mixer.",
+        )
+    if not app_state.current_qe or app_state.illuminant is None:
+        return FilmMatchVM(
+            target_name=film.display_name, overlay_fig=None, deviations=[],
+            note="A sensor and an illuminant are required to compute the match.",
+        )
+
+    target_channels, target_label, target_is_bw = _compute_film_emulation_target(
+        app_state, data.filter_collection
+    )
+    transmission = (
+        app_state.combined_transmission
+        if app_state.combined_transmission is not None
+        else np.ones_like(INTERP_GRID, dtype=float)
+    )
+    achieved = sensor_channel_curves(
+        transmission, app_state.current_qe, app_state.illuminant, display_scale=100.0
+    )
+
+    deviations: List[ChannelDeviationVM] = []
+    if target_channels is not None:
+        for ch in ("R", "G", "B"):
+            a_curve, t_curve = achieved.get(ch), target_channels.get(ch)
+            if a_curve is None or t_curve is None:
+                continue
+            peak, ratio, rms = _channel_deviation(a_curve, t_curve)
+            deviations.append(ChannelDeviationVM(
+                channel=ch,
+                peak_wavelength=(f"{peak} nm" if peak else "—"),
+                peak_ratio=f"×{ratio:.2f}",
+                rms_deviation=f"{rms * 100:.1f}%",
+            ))
+
+    overlay = None
+    if target_channels is not None:
+        overlay = _create_match_overlay_figure(
+            achieved, target_channels, target_label, target_is_bw
+        )
+
+    return FilmMatchVM(
+        target_name=film.display_name, overlay_fig=overlay, deviations=deviations,
+    )
+
