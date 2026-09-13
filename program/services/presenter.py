@@ -9,6 +9,7 @@ never on any UI toolkit.
 """
 # Standard library imports
 import colorsys
+import io
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -30,6 +31,9 @@ from services.calculations import (
     format_white_balance_data,
     compute_reflector_color,
     compute_white_balance_gains,
+    compute_white_reference_color,
+    reference_color_to_display,
+    srgb_encode,
 )
 from services.visualization import (
     create_filter_response_plot,
@@ -641,3 +645,239 @@ def prepare_reference(app_state: AppState, data: AppData) -> ReferenceVM:
     if not sections:
         note = note or "No reference data available."
     return ReferenceVM(sections=sections, note=note)
+
+
+# =============================================================================
+# SURFACES INSTRUMENT (white-referenced color chips — UX_SPEC.md §7.1)
+# =============================================================================
+
+@dataclass
+class SurfaceChipVM:
+    """One white-referenced color chip in the Surfaces grid."""
+    name: str
+    source_file: str
+    hex_display: str
+    linear_rgb: Tuple[float, float, float]
+    is_wb_ref: bool
+    note: str
+
+
+@dataclass
+class SurfacesVM:
+    """Everything the Surfaces grid needs to render."""
+    chips: List[SurfaceChipVM]
+    warning: Optional[str] = None
+    wb_source_name: Optional[str] = None
+
+
+def _rgb_to_hex_srgb(linear_rgb: np.ndarray) -> str:
+    """Linear white-referenced RGB -> sRGB-encoded hex for CSS display."""
+    encoded = srgb_encode(linear_rgb)
+    return "#{:02x}{:02x}{:02x}".format(
+        *(int(round(float(c) * 255)) for c in encoded)
+    )
+
+
+def _surface_color_chain(
+    app_state: AppState, data: AppData, reflectance: np.ndarray,
+    transmission: np.ndarray, white_ref: np.ndarray,
+) -> Tuple[np.ndarray, str]:
+    """Full §7.1 chain for one surface; returns (linear_rgb, hex)."""
+    surf = compute_reflector_color(
+        reflectance, transmission, app_state.current_qe, app_state.illuminant,
+        channel_mixer=app_state.channel_mixer,
+        white_balance_gains=app_state.white_balance_gains,
+    )
+    linear = reference_color_to_display(surf, white_ref)
+    return linear, _rgb_to_hex_srgb(linear)
+
+
+def prepare_surfaces(app_state: AppState, data: AppData) -> SurfacesVM:
+    """White-referenced chips for every surface selected in the instrument."""
+    qe = app_state.current_qe
+    if not qe or app_state.illuminant is None:
+        return SurfacesVM(
+            chips=[],
+            warning=UI_INFO_MESSAGES.get(
+                "qe_illuminant_required", "Select a sensor and an illuminant first."
+            ),
+        )
+
+    transmission = (
+        app_state.combined_transmission
+        if app_state.combined_transmission is not None
+        else np.ones_like(INTERP_GRID, dtype=float)
+    )
+    # Keep gains fresh for this panel even if the response panel hasn't run.
+    app_state.recompute_white_balance(transmission, data.reflector_collection)
+    white_ref = compute_white_reference_color(
+        transmission, qe, app_state.illuminant,
+        white_balance_gains=app_state.white_balance_gains,
+        channel_mixer=app_state.channel_mixer,
+    )
+
+    by_source = {
+        r.metadata.get("source_file", ""): r
+        for r in data.reflector_collection.reflectors
+    }
+    chips: List[SurfaceChipVM] = []
+    wb_source_name: Optional[str] = None
+    for src in app_state.selected_surfaces:
+        spectrum = by_source.get(src)
+        if spectrum is None:
+            continue
+        linear, hex_display = _surface_color_chain(
+            app_state, data, spectrum.values, transmission, white_ref
+        )
+        chips.append(SurfaceChipVM(
+            name=spectrum.name,
+            source_file=src,
+            hex_display=hex_display,
+            linear_rgb=(float(linear[0]), float(linear[1]), float(linear[2])),
+            is_wb_ref=(app_state.wb_reference_surface == src),
+            note=str(spectrum.metadata.get("Target Type", "")),
+        ))
+        if app_state.wb_reference_surface == src:
+            wb_source_name = spectrum.name
+
+    return SurfacesVM(chips=chips, wb_source_name=wb_source_name)
+
+# =============================================================================
+# REFLECTORS SHELF (library search + white-referenced preview rows)
+# =============================================================================
+
+@dataclass
+class ReflectorRowVM:
+    """One library row in the Reflectors shelf."""
+    name: str
+    source_file: str
+    organization: str
+    target_type: str
+    coverage_note: str
+    is_default: bool
+    is_surface: bool
+    is_wb_ref: bool
+    preview_hex: str
+
+
+@dataclass
+class ReflectorsShelfVM:
+    rows: List[ReflectorRowVM]
+    total_matches: int
+    organizations: List[str]
+    target_types: List[str]
+
+
+def _coverage_note(values: np.ndarray) -> str:
+    """Usefulness badge: wavelength span + mean reflectance of valid data."""
+    valid = np.isfinite(values) & (values > 0.02)
+    if not valid.any():
+        return "no data"
+    idx = np.where(valid)[0]
+    lo, hi = int(INTERP_GRID[idx[0]]), int(INTERP_GRID[idx[-1]])
+    mean_pct = float(np.nanmean(values[valid])) * 100.0
+    return f"{lo}-{hi} nm, mean {mean_pct:.0f}%"
+
+
+def prepare_reflectors_shelf(
+    app_state: AppState,
+    data: AppData,
+    orgs: Optional[List[str]] = None,
+    target_types: Optional[List[str]] = None,
+    limit: int = 40,
+) -> ReflectorsShelfVM:
+    """Search the reflector library and shape rows with live color previews."""
+    collection = data.reflector_collection
+    result_df = search_reflectors(collection.df, orgs or [], [], target_types or [])
+
+    qe = app_state.current_qe
+    has_chain = bool(qe) and app_state.illuminant is not None
+    transmission = (
+        app_state.combined_transmission
+        if app_state.combined_transmission is not None
+        else np.ones_like(INTERP_GRID, dtype=float)
+    )
+    white_ref = None
+    if has_chain:
+        app_state.recompute_white_balance(transmission, collection)
+        white_ref = compute_white_reference_color(
+            transmission, qe, app_state.illuminant,
+            white_balance_gains=app_state.white_balance_gains,
+            channel_mixer=app_state.channel_mixer,
+        )
+
+    source_to_name: Dict[str, str] = {}
+    for r in collection.reflectors:
+        source_to_name.setdefault(r.metadata.get("source_file", ""), r.name)
+
+    defaults = app_state.get_default_reflector_files()
+    rows: List[ReflectorRowVM] = []
+    for idx, row in result_df.head(limit).iterrows():
+        values = collection.reflector_matrix[idx]
+        name = str(row.get("Name", ""))
+        src = str(row.get("Source File", "")) if "Source File" in result_df.columns else ""
+        if not src:
+            src = next((s for s, n in source_to_name.items() if n == name), "")
+        preview_hex = "#777777"
+        if has_chain:
+            _, preview_hex = _surface_color_chain(
+                app_state, data, values, transmission, white_ref
+            )
+        rows.append(ReflectorRowVM(
+            name=name,
+            source_file=src,
+            organization=str(row.get("Organization", "")),
+            target_type=str(row.get("Target Type", "")),
+            coverage_note=_coverage_note(values),
+            is_default=(src in defaults),
+            is_surface=(src in app_state.selected_surfaces),
+            is_wb_ref=(app_state.wb_reference_surface == src),
+            preview_hex=preview_hex,
+        ))
+
+    orgs_all = (
+        sorted(set(collection.df["Organization"].astype(str)))
+        if "Organization" in collection.df.columns else []
+    )
+    targets_all = (
+        sorted(set(collection.df["Target Type"].astype(str)))
+        if "Target Type" in collection.df.columns else []
+    )
+    return ReflectorsShelfVM(
+        rows=rows, total_matches=len(result_df),
+        organizations=orgs_all, target_types=targets_all,
+    )
+
+
+# =============================================================================
+# ECOSIS IMPORT PREVIEW (preview-before-commit; commit runs via actions)
+# =============================================================================
+
+@dataclass
+class EcosisPreviewVM:
+    """Parsed summary of an ECOSIS CSV, shown before anything is written."""
+    filename: str
+    n_rows: int
+    n_cols: int
+    sample_names: List[str]
+    organizations: List[str]
+    error: Optional[str] = None
+
+
+def prepare_ecosis_preview(content: bytes, filename: str = "") -> EcosisPreviewVM:
+    """Parse an ECOSIS CSV in memory for display — no files are written."""
+    try:
+        df = pd.read_csv(io.BytesIO(content), sep=None, engine="python")
+    except Exception as exc:
+        return EcosisPreviewVM(
+            filename=filename, n_rows=0, n_cols=0,
+            sample_names=[], organizations=[], error=str(exc),
+        )
+    orgs = sorted(set(df["Organization"].astype(str))) if "Organization" in df.columns else []
+    name_col = "Sample" if "Sample" in df.columns else df.columns[0]
+    samples = [str(v) for v in df[name_col].head(8).tolist()]
+    return EcosisPreviewVM(
+        filename=filename, n_rows=len(df), n_cols=int(df.shape[1]),
+        sample_names=samples, organizations=orgs,
+    )
+

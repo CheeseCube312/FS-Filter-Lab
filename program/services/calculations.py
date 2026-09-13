@@ -423,3 +423,67 @@ def format_white_balance_data(
             "B": f"{intensities['B']:.3f}"
         }
     }
+
+
+# ============================================================================
+# EXPOSURE-REFERENCED SURFACE COLORS (UX_SPEC.md §7.1)
+# ============================================================================
+
+def compute_white_reference_color(
+    transmission: np.ndarray,
+    quantum_efficiency: Dict[str, np.ndarray],
+    illuminant: np.ndarray,
+    white_balance_gains: Optional[Dict[str, float]] = None,
+    channel_mixer: Optional[ChannelMixerSettings] = None
+) -> np.ndarray:
+    """
+    Sensor response to a perfect diffuse reflector (reflectance = 1.0 at every
+    wavelength) under the current stack x illuminant x sensor x WB (+ mixer).
+
+    This is the shared white anchor for surface color previews: the exposure
+    is defined so a perfect white just saturates.  Physically, a surface's
+    display color is its response divided by this anchor.
+
+    Returns:
+        RGB color as numpy array [R, G, B] (unnormalized integrated response)
+    """
+    ones = np.ones_like(INTERP_GRID)
+    return compute_reflector_color(
+        ones, transmission, quantum_efficiency, illuminant,
+        channel_mixer=channel_mixer, white_balance_gains=white_balance_gains,
+    )
+
+
+def reference_color_to_display(
+    surface_rgb: np.ndarray, white_ref_rgb: np.ndarray
+) -> np.ndarray:
+    """
+    White-referenced linear display color: ``clip(surface / white_ref, 0, 1)``.
+
+    A surface whose response equals the white anchor renders exactly white; a
+    near-black surface stays near-black (fixing the per-channel auto-exposure
+    bug that amplified every swatch's brightest channel to 1.0).
+
+    Returns:
+        Linear RGB in [0, 1] per channel.
+    """
+    surface = np.asarray(surface_rgb, dtype=float)
+    white = np.asarray(white_ref_rgb, dtype=float)
+    safe_white = np.where(white > EPSILON, white, 1.0)
+    return np.clip(surface / safe_white, 0.0, 1.0)
+
+
+def srgb_encode(linear_rgb: np.ndarray) -> np.ndarray:
+    """
+    IEC 61966-2-1 sRGB transfer function (vectorized), linear [0,1] in,
+    encoded [0,1] out.  Browsers assume sRGB — without this encoding
+    white-referenced midtones render too dark.
+    """
+    lin = np.clip(np.asarray(linear_rgb, dtype=float), 0.0, 1.0)
+    encoded = np.where(
+        lin <= 0.0031308,
+        lin * 12.92,
+        1.055 * np.power(lin, 1.0 / 2.4) - 0.055,
+    )
+    # Exactly white stays exactly white (1.055 - 0.055 loses a ULP in float).
+    return np.where(lin >= 1.0, 1.0, encoded)

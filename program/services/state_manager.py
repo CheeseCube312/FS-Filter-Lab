@@ -65,6 +65,8 @@ class AppState:
         default_factory=lambda: dict(DEFAULT_WB_GAINS)
     )
     wb_reference_surface: Optional[str] = None
+    # --- Surfaces instrument: reflectors added as color-preview chips (§3.2.3) ---
+    selected_surfaces: List[str] = field(default_factory=list)
     last_export: Dict[str, Any] = field(default_factory=dict)
     # --- Display toggles ---
     log_view: bool = False

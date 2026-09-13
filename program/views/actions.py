@@ -11,12 +11,18 @@ This module contains no NiceGUI layout code. The one sanctioned UI call is
 ``ui.notify`` for user feedback.
 """
 import logging
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+import numpy as np
 from nicegui import ui
 
+from models.constants import INTERP_GRID, OUTPUT_FOLDERS
 from models.core import AppData
 from services.app_operations import generate_application_report
+from services.data import load_reflector_collection
+from services.importing import import_ecosis_csv
 from services.state_manager import AppState
 
 logger = logging.getLogger(__name__)
@@ -187,6 +193,89 @@ def _reset_all(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     return {"*"}
 
 
+# ---------------------------------------------------------------------------
+# Surfaces instrument (UX_SPEC.md §7.1)
+# ---------------------------------------------------------------------------
+
+def _add_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    src = payload.get("source_file")
+    if src and src not in app_state.selected_surfaces:
+        app_state.selected_surfaces.append(src)
+    return {"surfaces"}
+
+
+def _remove_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    src = payload.get("source_file")
+    if src in app_state.selected_surfaces:
+        app_state.selected_surfaces.remove(src)
+    if app_state.wb_reference_surface == src:
+        app_state.reset_white_balance()
+        return {"surfaces", "sensor_response"}
+    return {"surfaces"}
+
+
+def _wb_from_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    src = payload.get("source_file")
+    spectrum = next(
+        (r for r in data.reflector_collection.reflectors
+         if r.metadata.get("source_file", "") == src),
+        None,
+    )
+    if spectrum is None:
+        ui.notify("Surface not found", type="warning")
+        return set()
+    transmission = (
+        app_state.combined_transmission
+        if app_state.combined_transmission is not None
+        else np.ones_like(INTERP_GRID, dtype=float)
+    )
+    app_state.set_white_balance_from_surface(
+        reflector=spectrum.values, transmission=transmission, source_file=src
+    )
+    return {"surfaces", "sensor_response"}
+
+
+def _reset_surface_wb(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    app_state.reset_white_balance()
+    return {"surfaces", "sensor_response"}
+
+
+# ---------------------------------------------------------------------------
+# Data imports (ECOSIS commit path; other importers land with the Data shelf)
+# ---------------------------------------------------------------------------
+
+def _import_ecosis(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    content: bytes = payload.get("content") or b""
+    filename = payload.get("filename") or "ecosis.csv"
+    if not content:
+        ui.notify("No ECOSIS file loaded", type="warning")
+        return set()
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".csv", prefix="ecosis_", delete=False
+        ) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        created = import_ecosis_csv(tmp_path, OUTPUT_FOLDERS["ecosis"])
+        ui.notify(f"Imported {len(created)} ECOSIS spectra", type="positive")
+        reloaded = load_reflector_collection()
+        if reloaded is not None:
+            data.reflector_collection = reloaded
+            app_state.seed_isdefault_reflectors(reloaded)
+        return {"shelf_reflectors"}
+    except ValueError as exc:
+        ui.notify(f"ECOSIS import failed: {exc}", type="negative")
+        return set()
+    except Exception:
+        logger.exception("ECOSIS import failed unexpectedly")
+        ui.notify("ECOSIS import failed — see terminal log", type="negative")
+        return set()
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+
+
 _HANDLERS = {
     "select_sensor": _select_sensor,
     "select_film": _select_film,
@@ -201,6 +290,11 @@ _HANDLERS = {
     "clear_my_filters": _clear_my_filters,
     "set_owned_only": _set_owned_only,
     "set_wb_enabled": _set_wb_enabled,
+    "add_surface": _add_surface,
+    "remove_surface": _remove_surface,
+    "wb_from_surface": _wb_from_surface,
+    "reset_surface_wb": _reset_surface_wb,
+    "import_ecosis": _import_ecosis,
     "run_report": _run_report,
     "reset_all": _reset_all,
 }

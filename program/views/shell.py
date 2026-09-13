@@ -8,6 +8,8 @@ from views.reference import render_reference
 from views.sensor_response import render_sensor_response
 from views.setup_rail import render_setup_rail
 from views.shelf_filters import render_filters_shelf
+from views.shelf_reflectors import render_reflectors_shelf
+from views.surfaces import render_surfaces
 from views.transmission import render_transmission
 
 
@@ -36,7 +38,7 @@ def build_page(app_state, data) -> None:
 
     @ui.refreshable
     def surfaces_panel():
-        _placeholder("Surfaces grid lands in slice U4 (white-referenced chips, §7.1).")
+        render_surfaces(ctx)
 
     @ui.refreshable
     def film_match_panel():
@@ -52,7 +54,7 @@ def build_page(app_state, data) -> None:
 
     @ui.refreshable
     def reflectors_shelf_panel():
-        _placeholder("Reflectors shelf lands in slice U4 (library + ECOSIS preview import).")
+        render_reflectors_shelf(ctx)
 
     @ui.refreshable
     def data_shelf_panel():
