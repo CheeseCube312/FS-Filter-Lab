@@ -2,11 +2,10 @@
 FS FilterLab — Entry Point
 ===================================
 Launch with:  python program/app.py
+   or from project root:  .venv/Scripts/python program/app.py
 
-UI rebuild in progress (ui-rebuild branch). The previous views/ layer was
-removed in slice U1; slices U2–U6 rebuild the interface per UX_SPEC.md.
-This stub keeps the boot path (data load + state init) alive and renders a
-placeholder page.
+Thin shell per UX_SPEC.md §6: data init, AppState init, page scaffolding.
+All feature logic lives in views/ + services/.
 """
 import logging
 import sys
@@ -22,36 +21,49 @@ from nicegui import ui
 
 from services.app_operations import initialize_application_data
 from services.state_manager import AppState
+from views.shell import build_page
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
-    # 1. Load data — keeps the boot path exercised during the rebuild.
-    data = initialize_application_data()
-    if data:
-        app_state = AppState()
-        app_state.seed_isdefault_reflectors(data.reflector_collection)
-    else:
-        logger.error("Failed to load application data; check the terminal output.")
+def _apply_startup_defaults(app_state: AppState, data) -> None:
+    """Preselect a sensor and illuminant so the first charts render (Mode A)."""
+    if app_state.active_profile is None:
+        profiles = data.sensor_profiles
+        if data.default_key in profiles:
+            app_state.active_profile = profiles[data.default_key]
+        else:
+            sensors = [p for p in profiles.values() if not p.is_film]
+            app_state.active_profile = sensors[0] if sensors else None
+    if app_state.illuminant is None and data.illuminants:
+        name = "D65" if "D65" in data.illuminants else sorted(data.illuminants)[0]
+        app_state.select_illuminant(name, data.illuminants)
 
-    # 2. Placeholder page until slice U2 lands the new shell.
+
+def main() -> None:
+    """Build the NiceGUI application UI."""
+
+    # 1. Load data
+    data = initialize_application_data()
+    if not data:
+        @ui.page("/")
+        def error_page():
+            ui.label(
+                "Failed to load application data. Check data files and the terminal for errors."
+            ).classes("text-red-600 text-xl m-8")
+        ui.run(title="FS FilterLab — Error", host="127.0.0.1", port=8080, reload=False, show=True)
+        return
+
+    # 2. State manager + startup defaults
+    app_state = AppState()
+    app_state.seed_isdefault_reflectors(data.reflector_collection)
+    _apply_startup_defaults(app_state, data)
+
+    # 3. Page
     @ui.page("/")
     def index():
-        ui.add_head_html(
-            "<style>body { font-family: Inter, system-ui, sans-serif; }</style>"
-        )
-        with ui.header().classes("items-center px-4 py-2 bg-blue-800"):
-            ui.label("FS FilterLab").classes("text-white text-lg font-bold")
-        with ui.column().classes("w-full items-center pt-24 gap-2"):
-            ui.label("UI rebuild in progress").classes("text-2xl font-bold")
-            ui.label(
-                "The views layer was removed (slice U1) and is being rebuilt per "
-                "UX_SPEC.md (slices U2–U6). Data loading still works; run the "
-                "test suite from the program/ directory with: "
-                "python -m unittest discover -s tests -t ."
-            ).classes("text-sm text-gray-500 max-w-xl text-center")
+        build_page(app_state, data)
 
     ui.run(
         title="FS FilterLab",

@@ -90,7 +90,8 @@ class SensorAnalysisVM:
 def prepare_filter_analysis(
     app_state: AppState,
     filter_collection: FilterCollection,
-    selected_indices: List[int]
+    selected_indices: Optional[List[int]] = None,
+    log_stops: Optional[bool] = None,
 ) -> FilterAnalysisVM:
     """
     Prepare all data needed to render the filter analysis section.
@@ -106,6 +107,13 @@ def prepare_filter_analysis(
     Returns:
         FilterAnalysisVM with all data needed for display
     """
+    if selected_indices is None:
+        selected_indices = compute_selected_filter_indices(
+            app_state.selected_filters,
+            app_state.filter_multipliers,
+            filter_collection,
+        )
+
     # Calculate transmission
     trans, label, combined = compute_filter_transmission(
         selected_indices,
@@ -140,7 +148,7 @@ def prepare_filter_analysis(
         selected_indices=selected_indices,
         combined=combined,
         target_profile=app_state.target_profile,
-        log_stops=app_state.log_view,
+        log_stops=log_stops if log_stops is not None else app_state.log_view,
         filter_names=filter_names,
         filter_hex_colors=filter_hex_colors
     )
@@ -256,7 +264,7 @@ def _compute_film_emulation_target(
 def prepare_sensor_analysis(
     app_state: AppState,
     data: AppData,
-    selected_indices: List[int]
+    selected_indices: Optional[List[int]] = None,
 ) -> SensorAnalysisVM:
     """
     Prepare all data needed to render the sensor analysis section.
@@ -272,6 +280,13 @@ def prepare_sensor_analysis(
     Returns:
         SensorAnalysisVM with all data needed for display
     """
+    if selected_indices is None:
+        selected_indices = compute_selected_filter_indices(
+            app_state.selected_filters,
+            app_state.filter_multipliers,
+            data.filter_collection,
+        )
+
     filter_collection = data.filter_collection
     reflector_collection = data.reflector_collection
     
@@ -455,3 +470,90 @@ def search_reflectors(
     if tgts:
         filtered = filtered[filtered["Target Type"].isin(tgts)]
     return filtered
+
+
+# =============================================================================
+# FILTER SHELF ROWS (quick + advanced search → renderable rows)
+# =============================================================================
+
+@dataclass
+class FilterRowVM:
+    """One search-result row for the Filters shelf / stack quick-add."""
+    display_name: str
+    manufacturer: str
+    hex_color: str
+    is_owned: bool
+    in_stack: bool
+    multiplier: int
+    sparkline: go.Figure
+
+
+def _create_filter_sparkline(transmission_row: np.ndarray, hex_color: str) -> go.Figure:
+    """Tiny inline transmission preview for shelf rows (no axes, decimated)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        y=transmission_row[::2],
+        mode="lines",
+        line=dict(color=hex_color or "#888888", width=1.5),
+        hoverinfo="skip",
+    ))
+    fig.update_layout(
+        width=96, height=30, margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(visible=False), yaxis=dict(visible=False, range=[0, 1.05]),
+        showlegend=False,
+    )
+    return fig
+
+
+def _quick_search_df(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Case-insensitive substring match on filter name / number."""
+    if not query:
+        return df
+    q = query.strip().lower()
+    mask = (
+        df["Filter Name"].astype(str).str.lower().str.contains(q, na=False)
+        | df["Filter Number"].astype(str).str.lower().str.contains(q, na=False)
+    )
+    return df[mask]
+
+
+def prepare_filter_rows(
+    app_state: AppState,
+    data: AppData,
+    query: str = "",
+    use_advanced: bool = False,
+    limit: int = 60,
+) -> List[FilterRowVM]:
+    """
+    Run the shelf query (quick substring or advanced criteria — presenter-owned
+    either way) and shape renderable rows with sparkline figures.
+    """
+    collection = data.filter_collection
+    if use_advanced:
+        result_df = search_filters(collection.df, collection.filter_matrix, app_state)
+    else:
+        result_df = _quick_search_df(collection.df, query)
+        if app_state.my_filters_only:
+            result_df = _owned_only(result_df, app_state.get_my_filters())
+
+    owned = app_state.get_my_filters()
+    display_to_index = collection.get_display_to_index_map()
+    rows: List[FilterRowVM] = []
+    for _, r in result_df.head(limit).iterrows():
+        display = f"{r['Filter Name']} ({r['Filter Number']}, {r['Manufacturer']})"
+        idx = display_to_index.get(display)
+        trans_row = collection.filter_matrix[idx] if idx is not None else None
+        rows.append(FilterRowVM(
+            display_name=display,
+            manufacturer=str(r["Manufacturer"]),
+            hex_color=str(r["Hex Color"]),
+            is_owned=display in owned,
+            in_stack=display in app_state.selected_filters,
+            multiplier=app_state.filter_multipliers.get(display, 1),
+            sparkline=(
+                _create_filter_sparkline(trans_row, str(r["Hex Color"]))
+                if trans_row is not None else go.Figure()
+            ),
+        ))
+    return rows
