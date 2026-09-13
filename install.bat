@@ -6,7 +6,9 @@ echo Setting up Python environment...
 python -m venv .venv
 call .venv\Scripts\activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r program\requirements.txt
 
-streamlit run app.py
+echo.
+echo Installation complete. Run start.bat to launch the app.
+pause
 

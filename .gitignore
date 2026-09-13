@@ -1,7 +1,8 @@
 .venv/
-.vscode/
+program/cache/
+program/output/
+program/data/
+program/data/filters_data/my_filters.json
+program/data/reflectors/default_reflectors.json
+
 __pycache__/
-.gitignore
-output/
-cache/
-data/
