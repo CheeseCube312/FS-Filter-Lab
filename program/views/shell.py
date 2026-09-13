@@ -4,6 +4,8 @@ from typing import Any, Callable, Dict
 from nicegui import ui
 
 from views.actions import handle_app_action
+from views.reference import render_reference
+from views.sensor_response import render_sensor_response
 from views.setup_rail import render_setup_rail
 from views.shelf_filters import render_filters_shelf
 from views.transmission import render_transmission
@@ -30,7 +32,7 @@ def build_page(app_state, data) -> None:
 
     @ui.refreshable
     def sensor_response_panel():
-        _placeholder("Sensor response panel lands in slice U3 (WB + channel toggles).")
+        render_sensor_response(ctx)
 
     @ui.refreshable
     def surfaces_panel():
@@ -42,7 +44,7 @@ def build_page(app_state, data) -> None:
 
     @ui.refreshable
     def reference_panel():
-        _placeholder("Reference curves land in slice U3 (raw QE / illuminant / film).")
+        render_reference(ctx)
 
     @ui.refreshable
     def filters_shelf_panel():

@@ -18,7 +18,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # Local imports
-from models.constants import INTERP_GRID, UI_INFO_MESSAGES
+from models.constants import CHART_COLORS, INTERP_GRID, SENSOR_TYPE_LABELS, UI_INFO_MESSAGES
 from models.core import AppData, FilterCollection
 from services.calculations import (
     compute_filter_transmission,
@@ -33,6 +33,7 @@ from services.calculations import (
 )
 from services.visualization import (
     create_filter_response_plot,
+    create_illuminant_figure,
     create_sensor_response_plot,
     prepare_rgb_for_display,
 )
@@ -265,6 +266,7 @@ def prepare_sensor_analysis(
     app_state: AppState,
     data: AppData,
     selected_indices: Optional[List[int]] = None,
+    visible_channels: Optional[Dict[str, bool]] = None,
 ) -> SensorAnalysisVM:
     """
     Prepare all data needed to render the sensor analysis section.
@@ -310,7 +312,10 @@ def prepare_sensor_analysis(
         interp_grid=INTERP_GRID,
         transmission=trans_interp,
         qe_data=app_state.current_qe,
-        visible_channels=app_state.rgb_channels_visibility,
+        visible_channels=(
+            visible_channels if visible_channels is not None
+            else app_state.rgb_channels_visibility
+        ),
         white_balance_gains=wb_gains,
         apply_white_balance=app_state.apply_white_balance,
         target_profile=app_state.target_profile,
@@ -557,3 +562,82 @@ def prepare_filter_rows(
             ),
         ))
     return rows
+
+
+# =============================================================================
+# REFERENCE TAB (read-only raw curves)
+# =============================================================================
+
+@dataclass
+class ReferenceVM:
+    """Read-only reference curves for the Reference tab (UX_SPEC.md §3.2.3)."""
+    sections: List[Tuple[str, Optional[go.Figure]]]
+    note: Optional[str] = None
+
+
+def _create_channel_curves_figure(
+    curves: Dict[str, np.ndarray], title: str, y_title: str,
+) -> go.Figure:
+    """Presenter-built raw per-channel curves figure (read-only lookup)."""
+    fig = go.Figure()
+    for channel in ("R", "G", "B"):
+        curve = curves.get(channel)
+        if curve is None:
+            continue
+        fig.add_trace(go.Scatter(
+            x=INTERP_GRID,
+            y=np.asarray(curve) * 100.0,
+            mode="lines",
+            name=channel,
+            line=dict(color=CHART_COLORS["rgb_colors"].get(channel, "gray"), width=2),
+        ))
+    fig.update_layout(
+        title=title,
+        xaxis_title="Wavelength (nm)",
+        yaxis_title=y_title,
+        margin=dict(l=40, r=20, t=40, b=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def prepare_reference(app_state: AppState, data: AppData) -> ReferenceVM:
+    """Raw sensitivity / illuminant / film-target curves — demoted lookup view."""
+    sections: List[Tuple[str, Optional[go.Figure]]] = []
+    note: Optional[str] = None
+    profile = app_state.active_profile
+
+    if profile and app_state.current_qe:
+        type_label = SENSOR_TYPE_LABELS.get(profile.sensor_type, str(profile.sensor_type))
+        sections.append((
+            f"Raw sensitivity — {profile.display_name} ({type_label})",
+            _create_channel_curves_figure(
+                app_state.current_qe, "Raw channel sensitivity", "Sensitivity (%)"
+            ),
+        ))
+    else:
+        note = "Select a sensor to see its raw sensitivity curves."
+
+    if app_state.illuminant is not None:
+        sections.append((
+            f"Illuminant — {app_state.illuminant_name or 'Illuminant'}",
+            create_illuminant_figure(
+                INTERP_GRID,
+                app_state.illuminant,
+                app_state.illuminant_name or "Illuminant",
+            ),
+        ))
+
+    film_profile = app_state.film_emulation_profile
+    if film_profile is not None and film_profile is not profile:
+        sections.append((
+            f"Film target — {film_profile.display_name}",
+            _create_channel_curves_figure(
+                film_profile.get_channels(), "Film target sensitivity", "Sensitivity (%)"
+            ),
+        ))
+
+    if not sections:
+        note = note or "No reference data available."
+    return ReferenceVM(sections=sections, note=note)
