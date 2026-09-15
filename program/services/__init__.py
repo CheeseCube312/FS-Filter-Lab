@@ -3,12 +3,15 @@ Services package for FS FilterLab.
 
 Core business logic and processing services:
 
-- app_operations: High-level application operations and workflow management
 - calculations: Mathematical computations for transmission and color analysis
+- channel_mixer: RGB channel-mixing transforms for responses and colors
 - data: Data loading and caching services with automatic validation
 - importing: File import utilities for various spectral data formats
-- state_manager: Application state management with reactive change callbacks
-- visualization: Chart generation and report creation services
+- presenter: Read-only view-model builders bridging services and the UI layer
+- reporting: PNG report generation and filename sanitization
+- spectra: Pure spectral-physics core (combine, integrate, WB gains)
+- state_manager: Plain-dataclass application state
+- visualization: Plotly chart generation for UI views
 
 All imports go directly to submodules (e.g., ``from services.calculations import ...``).
 """

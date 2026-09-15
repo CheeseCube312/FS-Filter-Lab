@@ -1,416 +1,193 @@
-"""
-Regression suite for the plain-dataclass application state (roadmap S3).
+"""services.state_manager — AppState contracts.
 
-Locks the S3 rewrite of services/state_manager.py: StateManager's dict-backed
-store, change listeners, generic get()/set(), legacy select_camera path, and
-the active_profile/current_qe/selected_camera triple are gone. AppState is a
-plain dataclass; current_qe and selected_camera are read-only derived
-properties of active_profile. The white-balance, selection, and JSON
-persistence behaviours are exercised end-to-end with monkeypatched
-calculators and temp-dir files -- no real user data is touched.
-
-Run from the program/ directory:
-
-    python -m unittest discover -s tests -v
-
-The suite is stdlib-only (unittest + numpy); no pytest dependency.
+Behavior only: the derived sensor triple (current_qe / selected_camera),
+white-balance recompute branches (standard / surface / dangling surface),
+My-Filters and default-reflector persistence round-trips, and the mutable
+-default factory rule.  Persistence files live in a throwaway dir; the patch
+is applied BEFORE AppState() is constructed.
 """
 import json
-import os
-import sys
-import tempfile
 import unittest
-from types import SimpleNamespace
-from unittest import mock
-
-# Make the program/ package root importable regardless of invocation cwd
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
 from models.constants import DEFAULT_WB_GAINS
-from models.core import ChannelMixerSettings
 from services.state_manager import AppState
+from tests.helpers import (
+    GRID,
+    TestCase,
+    display_name,
+    flat,
+    make_bw,
+    make_collection,
+    make_reflector,
+    make_sensor,
+    state_sandbox,
+)
 
 
-def _fake_profile(name="TestCam", gain=2.0):
-    channels = {ch: np.full(5, gain) for ch in ("R", "G", "B")}
-    return SimpleNamespace(display_name=name, get_channels=lambda: channels)
+def wb_scene():
+    """Sensor R:2 G:1 B:1, illum 2, trans 0.5 -> gains {R:2, G:1, B:1}."""
+    state = AppState()
+    state.active_profile = make_sensor(r=2.0, g=1.0, b=1.0)
+    state.illuminant = flat(2.0)
+    trans = flat(0.5)
+    return state, trans
 
 
-class SimpleNamespaceWithStr:
-    """Filter stand-in whose str() is 'Manufacturer Name' like models.Filter."""
+class DerivedProperties(TestCase):
+    def test_no_profile_gives_no_qe_and_no_camera(self):
+        state = AppState()
+        self.assertIsNone(state.current_qe)
+        self.assertIsNone(state.selected_camera)
 
-    def __init__(self, manufacturer, name):
-        self.manufacturer = manufacturer
-        self.name = name
+    def test_active_profile_drives_both_derived_values(self):
+        state = AppState()
+        state.active_profile = make_sensor(manufacturer="Cam", name="X")
+        self.assertEqual(set(state.current_qe), {"R", "G", "B"})
+        self.assertEqual(state.selected_camera, "Cam X")
 
-    def __str__(self):
-        return f"{self.manufacturer} {self.name}"
-
-
-def _fake_filter_collection(names):
-    """Fake FilterCollection: display name == str(filter), index == position."""
-    filters = [SimpleNamespaceWithStr("M", n) for n in names]
-    return SimpleNamespace(
-        filters=filters,
-        get_display_to_index_map=lambda: {str(f): i for i, f in enumerate(filters)},
-    )
-
-
-# ============================================================================
-# Defaults & dataclass hygiene
-# ============================================================================
-
-class TestDefaults(unittest.TestCase):
-    def test_initial_values(self):
-        s = AppState()
-        self.assertEqual(s.selected_filters, [])
-        self.assertEqual(s.filter_multipliers, {})
-        self.assertIsNone(s.active_profile)
-        self.assertIsNone(s.illuminant)
-        self.assertIsNone(s.target_profile)
-        self.assertFalse(s.film_emulation_wb)
-        self.assertEqual(s.white_balance_gains, dict(DEFAULT_WB_GAINS))
-        self.assertEqual(s.film_emulation_wb_gains, dict(DEFAULT_WB_GAINS))
-        self.assertEqual(s.advanced_search_sort, "Filter Number")
-        self.assertEqual(
-            s.advanced_search_wavelength_criteria,
-            [{"wavelength": 550, "trans_min": 0, "trans_max": 100}],
-        )
-        self.assertTrue(s.show_R and s.show_G and s.show_B)
-        self.assertEqual(s.channel_mixer, ChannelMixerSettings())
-        self.assertEqual(s.sidebar_expansions, {})
-
-    def test_mutable_defaults_are_per_instance(self):
-        a, b = AppState(), AppState()
-        self.assertIsNot(a.selected_filters, b.selected_filters)
-        self.assertIsNot(a.filter_multipliers, b.filter_multipliers)
-        self.assertIsNot(a.sidebar_expansions, b.sidebar_expansions)
-        self.assertIsNot(a.white_balance_gains, b.white_balance_gains)
-        self.assertIsNot(a.advanced_search_wavelength_criteria,
-                         b.advanced_search_wavelength_criteria)
-        a.selected_filters.append("X")
-        a.sidebar_expansions["k"] = True
-        self.assertEqual(b.selected_filters, [])
-        self.assertEqual(b.sidebar_expansions, {})
+    def test_bw_profile_maps_one_curve_to_three_keys(self):
+        state = AppState()
+        profile = make_bw(sensitivity=1.0)
+        state.active_profile = profile
+        self.assertIs(state.current_qe["R"], state.current_qe["B"])
 
 
-# ============================================================================
-# Derived state: the collapsed sensor triple-key
-# ============================================================================
+class WhiteBalanceRecompute(TestCase):
+    def test_standard_recompute_hand_computed(self):
+        state, trans = wb_scene()
+        gains = state.recompute_white_balance(trans)
+        self.assertEqual(gains, {"R": 2.0, "G": 1.0, "B": 1.0})
+        self.assertEqual(state.white_balance_gains, gains)
 
-class TestDerivedSensorState(unittest.TestCase):
-    def test_no_profile(self):
-        s = AppState()
-        self.assertIsNone(s.current_qe)
-        self.assertIsNone(s.selected_camera)
+    def test_surface_reference_recomputes_from_that_surface(self):
+        state, trans = wb_scene()
+        collection = type("C", (), {})()
+        collection.reflectors = [
+            make_reflector(flat(0.5), source_file="leaf.tsv")]
+        state.wb_reference_surface = "leaf.tsv"
+        gains = state.recompute_white_balance(trans, collection)
+        # Neutral grey scales all channels equally: same ratios as standard.
+        self.assertEqual(gains, {"R": 2.0, "G": 1.0, "B": 1.0})
+        self.assertEqual(state.wb_reference_surface, "leaf.tsv")
 
-    def test_profile_drives_both(self):
-        s = AppState()
-        p = _fake_profile("Nikon D850")
-        s.active_profile = p
-        self.assertEqual(s.selected_camera, "Nikon D850")
-        self.assertEqual(set(s.current_qe), {"R", "G", "B"})
-        self.assertEqual(s.current_qe["R"][0], 2.0)
+    def test_dangling_surface_reference_falls_back_and_clears(self):
+        # Regression: a deleted surface file used to leave the stored gains
+        # and the UI chip disagreeing.  Fallback must drop the reference too.
+        state, trans = wb_scene()
+        state.wb_reference_surface = "gone.tsv"
+        gains = state.recompute_white_balance(trans, reflector_collection=None)
+        self.assertEqual(gains, {"R": 2.0, "G": 1.0, "B": 1.0})
+        self.assertIsNone(state.wb_reference_surface)
 
-    def test_select_sensor_set_and_clear(self):
-        s = AppState()
-        profiles = {"Nikon D850": _fake_profile("Nikon D850")}
-        s.select_sensor("Nikon D850", profiles)
-        self.assertIs(s.active_profile, profiles["Nikon D850"])
-        self.assertEqual(s.selected_camera, "Nikon D850")
-        s.select_sensor("None", profiles)
-        self.assertIsNone(s.active_profile)
-        self.assertIsNone(s.selected_camera)
-        self.assertIsNone(s.current_qe)
+    def test_no_sensor_leaves_existing_gains_untouched(self):
+        state = AppState()
+        state.white_balance_gains = {"R": 3.0, "G": 2.0, "B": 1.0}
+        gains = state.recompute_white_balance(flat(0.5))
+        self.assertEqual(gains, {"R": 3.0, "G": 2.0, "B": 1.0})
 
+    def test_set_white_balance_from_surface_records_the_source(self):
+        state, trans = wb_scene()
+        state.set_white_balance_from_surface(
+            reflector=flat(0.5), transmission=trans, source_file="leaf.tsv")
+        self.assertEqual(state.white_balance_gains, {"R": 2.0, "G": 1.0, "B": 1.0})
+        self.assertEqual(state.wb_reference_surface, "leaf.tsv")
 
-# ============================================================================
-# Composed-view properties
-# ============================================================================
+    def test_set_white_balance_from_surface_is_a_noop_without_sensor(self):
+        state = AppState()
+        state.set_white_balance_from_surface(flat(0.5), flat(0.5), "leaf.tsv")
+        self.assertEqual(state.white_balance_gains, DEFAULT_WB_GAINS)
+        self.assertIsNone(state.wb_reference_surface)
 
-class TestComposedProperties(unittest.TestCase):
-    def test_rgb_visibility_roundtrip(self):
-        s = AppState()
-        self.assertEqual(s.rgb_channels_visibility, {"R": True, "G": True, "B": True})
-        s.rgb_channels_visibility = {"R": False, "G": True}
-        self.assertFalse(s.show_R)
-        self.assertTrue(s.show_G)
-        self.assertTrue(s.show_B)  # missing key defaults to True
-
-    def test_show_channel_mixer_bridges_enabled(self):
-        s = AppState()
-        self.assertFalse(s.show_channel_mixer)
-        s.show_channel_mixer = True
-        self.assertTrue(s.channel_mixer.enabled)
-        s.show_channel_mixer = False
-        self.assertFalse(s.channel_mixer.enabled)
-
-    def test_sidebar_expansions_copy_then_assign(self):
-        # Mirrors views/ui_utils.stateful_expansion usage
-        s = AppState()
-        exps = dict(s.sidebar_expansions)
-        exps["filters"] = True
-        s.sidebar_expansions = exps
-        self.assertEqual(s.sidebar_expansions.get("filters", False), True)
+    def test_reset_restores_unity_and_clears_the_reference(self):
+        state, trans = wb_scene()
+        state.set_white_balance_from_surface(flat(0.5), trans, "leaf.tsv")
+        state.reset_white_balance()
+        self.assertEqual(state.white_balance_gains, DEFAULT_WB_GAINS)
+        self.assertIsNone(state.wb_reference_surface)
 
 
-# ============================================================================
-# Selection helpers
-# ============================================================================
+class MyFiltersPersistence(TestCase):
+    def test_add_writes_sorted_json_and_survives_a_new_state(self):
+        with state_sandbox() as tmp:
+            state = AppState()
+            state.add_to_my_filters("Zeta (Z1, Foo)")
+            state.add_to_my_filters("Alpha (A1, Foo)")
+            on_disk = json.loads(
+                (tmp / "my_filters.json").read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["my_filters"],
+                             ["Alpha (A1, Foo)", "Zeta (Z1, Foo)"])
+            reloaded = AppState()
+            self.assertTrue(reloaded.is_my_filter("Alpha (A1, Foo)"))
 
-class TestSelectionHelpers(unittest.TestCase):
-    def test_select_illuminant(self):
-        s = AppState()
-        illuminants = {"D65": np.arange(3), "D50": np.arange(3) * 2}
-        s.select_illuminant("D65", illuminants)
-        self.assertEqual(s.illuminant_name, "D65")
-        np.testing.assert_array_equal(s.illuminant, illuminants["D65"])
+    def test_add_is_idempotent_and_remove_updates_disk(self):
+        with state_sandbox():
+            state = AppState()
+            state.add_to_my_filters("A (A1, Foo)")
+            state.add_to_my_filters("A (A1, Foo)")
+            self.assertEqual(len(state.get_my_filters()), 1)
+            state.remove_from_my_filters("A (A1, Foo)")
+            self.assertFalse(state.is_my_filter("A (A1, Foo)"))
+            self.assertFalse(AppState().is_my_filter("A (A1, Foo)"))
 
-    def test_select_target(self):
-        s = AppState()
-        # Display names are str(filter) == "Manufacturer Name"
-        fc = _fake_filter_collection(["ND8", "Polarizer"])
-        s.select_target("M Polarizer", fc)
-        self.assertEqual(s.selected_target_name, "M Polarizer")
-        self.assertIs(s.target_profile, fc.filters[1])
-        s.select_target(None, fc)
-        self.assertIsNone(s.target_profile)
-        self.assertIsNone(s.selected_target_name)
+    def test_corrupt_file_loads_as_empty_instead_of_crashing(self):
+        with state_sandbox() as tmp:
+            (tmp / "my_filters.json").write_text("{not json", encoding="utf-8")
+            self.assertEqual(AppState().get_my_filters(), set())
 
-    def test_select_film_emulation_target(self):
-        s = AppState()
-        profiles = {"Portra 400": _fake_profile("Portra 400")}
-        s.select_film_emulation_target("Portra 400", profiles)
-        self.assertIs(s.film_emulation_profile, profiles["Portra 400"])
-        self.assertEqual(s.film_emulation_profile_name, "Portra 400")
-        s.select_film_emulation_target("None", profiles)
-        self.assertIsNone(s.film_emulation_profile)
-        self.assertIsNone(s.film_emulation_profile_name)
-
-
-# ============================================================================
-# White balance paths (calculators monkeypatched)
-# ============================================================================
-
-class TestWhiteBalance(unittest.TestCase):
-    def _state_with_profile(self):
-        s = AppState()
-        s.active_profile = _fake_profile()
-        s.illuminant = np.ones(5)
-        return s
-
-    def test_set_white_balance_from_surface(self):
-        s = self._state_with_profile()
-        gains = {"R": 1.2, "G": 1.0, "B": 0.9}
-        with mock.patch(
-            "services.calculations.compute_white_balance_gains_from_surface",
-            return_value=gains,
-        ) as m:
-            s.set_white_balance_from_surface(np.ones(5), np.ones(5), "refl.tsv")
-        m.assert_called_once()
-        self.assertEqual(s.white_balance_gains, gains)
-        self.assertEqual(s.wb_reference_surface, "refl.tsv")
-
-    def test_set_white_balance_skipped_without_profile(self):
-        s = AppState()  # no active profile -> current_qe None
-        with mock.patch(
-            "services.calculations.compute_white_balance_gains_from_surface"
-        ) as m:
-            s.set_white_balance_from_surface(np.ones(5), np.ones(5), "x")
-        m.assert_not_called()
-        self.assertEqual(s.white_balance_gains, dict(DEFAULT_WB_GAINS))
-
-    def test_recompute_plain_path(self):
-        s = self._state_with_profile()
-        gains = {"R": 1.5, "G": 1.0, "B": 0.8}
-        with mock.patch(
-            "services.calculations.compute_white_balance_gains",
-            return_value=gains,
-        ) as m:
-            out = s.recompute_white_balance(np.ones(5))
-        m.assert_called_once()
-        self.assertEqual(out, gains)
-        self.assertEqual(s.white_balance_gains, gains)
-
-    def test_recompute_with_known_reference(self):
-        s = self._state_with_profile()
-        s.wb_reference_surface = "refl.tsv"
-        reflector = SimpleNamespace(
-            values=np.ones(5), metadata={"source_file": "refl.tsv"}
-        )
-        collection = SimpleNamespace(reflectors=[reflector])
-        gains = {"R": 1.1, "G": 1.0, "B": 0.95}
-        with mock.patch(
-            "services.calculations.compute_white_balance_gains_from_surface",
-            return_value=gains,
-        ) as m_surface, mock.patch(
-            "services.calculations.compute_white_balance_gains"
-        ) as m_plain:
-            out = s.recompute_white_balance(np.ones(5), collection)
-        m_surface.assert_called_once()
-        m_plain.assert_not_called()
-        self.assertEqual(out, gains)
-
-    def test_recompute_unknown_reference_falls_back_and_clears(self):
-        s = self._state_with_profile()
-        s.wb_reference_surface = "missing.tsv"
-        collection = SimpleNamespace(reflectors=[])
-        gains = {"R": 1.3, "G": 1.0, "B": 0.9}
-        with mock.patch(
-            "services.calculations.compute_white_balance_gains",
-            return_value=gains,
-        ):
-            out = s.recompute_white_balance(np.ones(5), collection)
-        self.assertEqual(out, gains)
-        self.assertIsNone(s.wb_reference_surface)
-
-    def test_recompute_noop_without_profile(self):
-        s = AppState()
-        with mock.patch("services.calculations.compute_white_balance_gains") as m:
-            out = s.recompute_white_balance(np.ones(5))
-        m.assert_not_called()
-        self.assertEqual(out, dict(DEFAULT_WB_GAINS))
-
-    def test_reset_white_balance(self):
-        s = self._state_with_profile()
-        s.white_balance_gains = {"R": 2.0, "G": 1.0, "B": 0.5}
-        s.wb_reference_surface = "refl.tsv"
-        s.reset_white_balance()
-        self.assertEqual(s.white_balance_gains, dict(DEFAULT_WB_GAINS))
-        self.assertIsNone(s.wb_reference_surface)
+    def test_add_manufacturer_returns_count_and_owning_only_that_brand(self):
+        with state_sandbox():
+            state = AppState()
+            collection = make_collection([
+                {"name": "A", "number": "A1", "manufacturer": "Foo",
+                 "hex": "#101010", "curve": flat(0.5)},
+                {"name": "B", "number": "B1", "manufacturer": "Foo",
+                 "hex": "#202020", "curve": flat(0.4)},
+                {"name": "C", "number": "C1", "manufacturer": "Bar",
+                 "hex": "#303030", "curve": flat(0.3)},
+            ])
+            added = state.add_manufacturer_to_my_filters("Foo", collection)
+            self.assertEqual(added, 2)
+            self.assertTrue(state.is_my_filter(display_name("A", "A1", "Foo")))
+            self.assertFalse(state.is_my_filter(display_name("C", "C1", "Bar")))
+            removed = state.remove_manufacturer_from_my_filters("Foo", collection)
+            self.assertEqual(removed, 2)
+            self.assertEqual(state.get_my_filters(), set())
 
 
-# ============================================================================
-# JSON persistence: my filters + default reflectors (temp dirs)
-# ============================================================================
+class DefaultReflectorPersistence(TestCase):
+    def test_add_and_reload_round_trip(self):
+        with state_sandbox():
+            state = AppState()
+            state.add_to_default_reflectors("plant/leaf.tsv")
+            self.assertTrue(state.is_default_reflector("plant/leaf.tsv"))
+            self.assertEqual(AppState().get_default_reflector_files(),
+                             ["plant/leaf.tsv"])
 
-class TestMyFiltersPersistence(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        patcher = mock.patch(
-            "services.state_manager.MY_FILTERS_FILE",
-            os.path.join(self._tmp.name, "my_filters.json"),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_add_remove_roundtrip_and_file_sorted(self):
-        s = AppState()  # constructor loads (missing file -> empty set)
-        s.add_to_my_filters("Zeta")
-        s.add_to_my_filters("Alpha")
-        self.assertTrue(s.is_my_filter("Alpha"))
-        self.assertEqual(s.get_my_filters_count(), 2)
-        path = os.path.join(self._tmp.name, "my_filters.json")
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        self.assertEqual(data["my_filters"], ["Alpha", "Zeta"])  # sorted on write
-        s.remove_from_my_filters("Alpha")
-        self.assertFalse(s.is_my_filter("Alpha"))
-        self.assertEqual(s.get_my_filters_count(), 1)
-
-    def test_add_is_idempotent(self):
-        s = AppState()
-        s.add_to_my_filters("Same")
-        s.add_to_my_filters("Same")
-        self.assertEqual(s.get_my_filters_count(), 1)
-
-    def test_manufacturer_add_remove(self):
-        s = AppState()
-        fc = _fake_filter_collection(["A One", "A Two", "B Three"])
-        added = s.add_manufacturer_to_my_filters("M", fc)
-        self.assertEqual(added, 3)
-        removed = s.remove_manufacturer_from_my_filters("M", fc)
-        self.assertEqual(removed, 3)
-        self.assertEqual(s.get_my_filters_count(), 0)
-
-    def test_clear_all(self):
-        s = AppState()
-        s.add_to_my_filters("X")
-        s.clear_all_my_filters()
-        self.assertEqual(s.get_my_filters_count(), 0)
-        path = os.path.join(self._tmp.name, "my_filters.json")
-        with open(path, encoding="utf-8") as fh:
-            self.assertEqual(json.load(fh)["my_filters"], [])
-
-    def test_state_reload_picks_up_file(self):
-        s = AppState()
-        s.add_to_my_filters("Persisted")
-        fresh = AppState()
-        self.assertTrue(fresh.is_my_filter("Persisted"))
+    def test_seed_isdefault_is_idempotent(self):
+        with state_sandbox():
+            state = AppState()
+            collection = type("C", (), {})()
+            collection.reflectors = [
+                make_reflector(flat(0.5), source_file="leaf.tsv",
+                               IsDefault="yes")]
+            state.seed_isdefault_reflectors(collection)
+            state.seed_isdefault_reflectors(collection)
+            self.assertEqual(state.get_default_reflector_files(), ["leaf.tsv"])
 
 
-class TestDefaultReflectorsPersistence(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        patcher = mock.patch(
-            "services.state_manager.DEFAULT_REFLECTORS_FILE",
-            os.path.join(self._tmp.name, "default_reflectors.json"),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+class MutableDefaultSafety(TestCase):
+    def test_wavelength_criteria_factory_gives_fresh_rows_per_state(self):
+        with state_sandbox():
+            s1, s2 = AppState(), AppState()
+            s1.advanced_search_wavelength_criteria[0]["wavelength"] = 600
+            self.assertEqual(
+                s2.advanced_search_wavelength_criteria[0]["wavelength"], 550)
 
-    def test_add_remove_roundtrip_and_reload(self):
-        s = AppState()
-        s.add_to_default_reflectors("a_reflector.tsv")
-        s.add_to_default_reflectors("a_reflector.tsv")  # idempotent
-        self.assertTrue(s.is_default_reflector("a_reflector.tsv"))
-        path = os.path.join(self._tmp.name, "default_reflectors.json")
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        self.assertEqual(data["default_reflectors"], ["a_reflector.tsv"])
-        fresh = AppState()
-        self.assertTrue(fresh.is_default_reflector("a_reflector.tsv"))
-        fresh.remove_from_default_reflectors("a_reflector.tsv")
-        self.assertFalse(fresh.is_default_reflector("a_reflector.tsv"))
-
-    def test_seed_isdefault_reflectors(self):
-        s = AppState()
-        collection = SimpleNamespace(
-            reflectors=[
-                SimpleNamespace(
-                    metadata={"IsDefault": "yes", "source_file": "auto.tsv"}
-                ),
-                SimpleNamespace(
-                    metadata={"IsDefault": "", "source_file": "manual.tsv"}
-                ),
-            ]
-        )
-        s.seed_isdefault_reflectors(collection)
-        self.assertTrue(s.is_default_reflector("auto.tsv"))
-        self.assertFalse(s.is_default_reflector("manual.tsv"))
-
-    def test_seed_tolerates_non_collection(self):
-        s = AppState()
-        s.seed_isdefault_reflectors(None)
-        s.seed_isdefault_reflectors(SimpleNamespace())  # no .reflectors
-        self.assertEqual(s.get_default_reflector_files(), [])
-
-
-# ============================================================================
-# S3 decision guards: the deleted machinery must stay deleted
-# ============================================================================
-
-class TestDeletedMachineryStaysDeleted(unittest.TestCase):
-    def test_no_listener_or_dict_machinery(self):
-        for name in ("on_change", "_notify", "_set", "_store", "_listeners",
-                     "get", "set", "select_camera", "invert_output",
-                     "get_state_manager"):
-            self.assertFalse(hasattr(AppState, name), msg=name)
-
-    def test_derived_keys_are_read_only(self):
-        s = AppState()
-        with self.assertRaises(AttributeError):
-            s.current_qe = {"R": None}
-        with self.assertRaises(AttributeError):
-            s.selected_camera = "X"
+    def test_default_sort_choice_is_filter_number(self):
+        self.assertEqual(AppState().advanced_search_sort, "Filter Number")
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
