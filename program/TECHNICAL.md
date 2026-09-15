@@ -81,7 +81,7 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 
 - Computes everything a view needs (charts, metrics, messages) and bundles it in typed view-model dataclasses: `FilterAnalysisVM`, `SensorAnalysisVM`, `TransmissionMetricsVM`, `WhiteBalanceVM`
 - Views in `views/` contain **zero computation** — they render view models and dispatch user input
-- Imperative actions (report generation) are handled by `views/actions.py`, which calls services directly (`services.reporting` for PNG reports, `services.importing` for staged imports)
+- Imperative actions (report generation) are handled by `views/actions.py`, which calls services directly (`services.visualization` for PNG reports, `services.importing` for staged imports)
 
 ### Feature Map
 - **Advanced Filter Search**: manufacturer/hex-color/wavelength-transmission criteria with live sparkline previews (`views/shelf_filters.py`; compute in `presenter.search_filters`, previews via `presenter._create_filter_sparkline`)

@@ -25,7 +25,9 @@ from services.spectra import wb_gains as compute_wb_gains
 logger = logging.getLogger(__name__)
 
 DEFAULT_REFLECTORS_FILE = "program/data/reflectors/default_reflectors.json"
-def _load_json_list(path: str, key: str) -> list:
+
+
+def _load_json_list(path: str, key: str) -> List[str]:
     """Read a JSON object from ``path`` and return its ``key`` list (or [])."""
     fp = Path(path)
     if fp.exists():
@@ -38,7 +40,7 @@ def _load_json_list(path: str, key: str) -> list:
     return []
 
 
-def _save_json_list(path: str, key: str, items: list) -> None:
+def _save_json_list(path: str, key: str, items: List[str]) -> None:
     """Write ``{key: items}`` as JSON to ``path``, creating parent folders."""
     fp = Path(path)
     fp.parent.mkdir(parents=True, exist_ok=True)
@@ -46,7 +48,6 @@ def _save_json_list(path: str, key: str, items: list) -> None:
         fp.write_text(json.dumps({key: items}, indent=2), encoding="utf-8")
     except IOError as exc:
         logger.warning("Could not save %s: %s", fp, exc)
-
 
 
 def _default_wavelength_criteria() -> List[Dict[str, int]]:

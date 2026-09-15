@@ -274,8 +274,9 @@ def _interp_with_extrapolation(wavelengths, values, target_wavelengths):
 def _sanitize_filename(name):
     """Convert a string to a valid import filename (spaces -> underscores).
 
-    Deliberately different from reporting.sanitize_filename_component
-    (report paths; invalid chars -> '-'): unifying the two would change the
+    Deliberately different from
+    visualization.sanitize_filename_component (report paths; invalid chars
+    -> '-'): unifying the two would change the
     on-disk names future imports produce and orphan existing files.
     """
     return ''.join(c for c in name if c.isalnum() or c in (' ', '_')).rstrip().replace(' ', '_')

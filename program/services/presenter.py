@@ -264,7 +264,7 @@ def prepare_sensor_analysis(
 ) -> SensorAnalysisVM:
     """Prepare the sensor response chart and white-balance display."""
     filter_collection = data.filter_collection
-    # Compute active transmission
+    # Effective transmission of the selected filter stack
     trans_interp = effective_transmission(
         app_state.selected_filters,
         app_state.filter_multipliers,
