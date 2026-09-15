@@ -30,7 +30,7 @@ This guide walks you through using FS FilterLab for optical analysis.
 ### Step 3: Choose Analysis Parameters
 1. **Sensor / Film Profile**: Select a digital camera QE profile or a film stock (slide, color negative, or B&W)
 2. **Illuminant**: Choose light source (AM1.5 Global is typical daylight)
-3. **Display Options**: Toggle RGB channels, log scale, white balance
+3. **Display Options**: Toggle individual RGB channels and white balance (switches on the sensor response card)
 
 ### Step 4: Analyze Results
 1. **Main transmission chart** shows the combined filter response
@@ -41,10 +41,10 @@ This guide walks you through using FS FilterLab for optical analysis.
 ## Advanced Features
 
 ### Advanced Filter Search
-1. Click **"Show Advanced Search"** in the sidebar
-2. **Filter by Manufacturer**: Select brands to narrow choices
-3. **Transmission at Wavelength**: Find filters with specific properties at target wavelengths
-4. **Color Sorting**: Sort by rainbow color for visual selection
+1. On the **Filters** shelf, open the **"Advanced search"** expansion
+2. **Manufacturers**: Select brands to narrow choices
+3. **Transmission criteria**: Constrain filters by min/max transmission at target wavelengths — all criteria must match
+4. **Sorting**: Order results by filter number, name, transmission at λ, or hex-rainbow color
 
 ### Sensor and Film Profiles
 - The **"Sensor / Film Profile"** picker lists both digital sensors and film stocks
@@ -63,7 +63,7 @@ This guide walks you through using FS FilterLab for optical analysis.
 3. The white balance panel shows **"(from surface reference)"** while active
 
 ### Custom Data Import
-1. Click **"Show Import Data"** in the sidebar — the dialog has five tabs:
+1. Open the **Data** tab — five import cards, one per data type, plus a digitized-CSV fast path that parses pasted or uploaded data with inline metadata entry:
 2. **Filters**: Import custom TSV filter files
 3. **Illuminants**: Add custom light sources
 4. **Camera QE**: Add digital camera sensor profiles
@@ -80,7 +80,7 @@ This guide walks you through using FS FilterLab for optical analysis.
 
 ### Transmission Chart
 - **X-axis**: Wavelength (300-1100 nm)
-- **Y-axis**: Transmission (0-100% or logarithmic)
+- **Y-axis**: Transmission (0-100%)
 - **Multiple Lines**: Individual filters in stack
 - **Combined Line**: Final result of all filters
 
@@ -98,10 +98,5 @@ This guide walks you through using FS FilterLab for optical analysis.
 ## Settings and Preferences
 
 ### Display Options
-- **Log View**: Toggle between linear and logarithmic transmission scales
-- **RGB Channels**: Show/hide individual red, green, blue responses
-- **Apply White Balance**: Enable automatic white balance correction
-
-### Performance Options
-- **Advanced Search**: Enable multi-criteria filter search
-- **Import Data**: Enable file upload interfaces
+- **RGB Channels**: Show/hide individual red, green, blue responses (per-channel checkboxes on the sensor response card)
+- **WB**: Enable automatic white balance correction (switch on the sensor response card)

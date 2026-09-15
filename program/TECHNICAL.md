@@ -14,7 +14,7 @@ services/    # Framework-agnostic data processing and logic
   - visualization.py   # Plotly charts for UI views + matplotlib PNG report rendering
   - presenter.py       # View-model builder; advanced search compute
   - data.py            # TSV loading, caching, data normalization
-  - importing.py       # Data import (filters, film profiles, QE)
+  - importing.py       # Data import (filters, illuminants, camera QE, film, reflectance)
   - spectra.py         # Pure spectral-physics core (combine, integrate, WB gains)
   - state_manager.py   # Application state management
 views/       # NiceGUI UI components (zero computation — render view models only)
@@ -29,6 +29,7 @@ views/       # NiceGUI UI components (zero computation — render view models on
   - transmission.py     # Transmission metrics view
   - surfaces.py         # Surface/reflector view
   - reference.py        # White-balance reference view
+tests/       # unittest suite (calculations, data, importing, presenter, spectra, state, report)
 data/        # Spectral data files (TSV format)
   - filters_data/     # Filter transmissions (+ my_filters.json)
   - QE_data/          # Camera sensor QE curves
@@ -85,7 +86,7 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 
 ### Feature Map
 - **Advanced Filter Search**: manufacturer/hex-color/wavelength-transmission criteria with live sparkline previews (`views/shelf_filters.py`; compute in `presenter.search_filters`, previews via `presenter._create_filter_sparkline`)
-- **Advanced Reflector Search**: filter by organization, package, or target type (`views/shelf_reflectors.py`; compute in `presenter.search_reflectors`)
+- **Advanced Reflector Search**: filter by organization or target type — only bites on reflector metadata, which the stock plant TSVs don't carry (`views/shelf_reflectors.py`; compute in `presenter.search_reflectors`)
 - **My Filters Manager**: curate owned filters, persisted to `data/filters_data/my_filters.json`, with a "My Filters only" sidebar toggle
 - **White Balance from Surface Reference**: pick any loaded reflector as WB source; gains recompute against it (`AppState.recompute_white_balance`, `wb_reference_surface` state)
 - **Film Emulation Target**: overlay a film profile's response as a target with its own independent filter stack and white balance
@@ -128,14 +129,14 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 - Apply percentage conversion only at UI display layer
 
 ### Adding New UI Components
-- Place in appropriate `views/` module or create in `views/ui_utils.py` for reusables
+- Place in the appropriate `views/` module; there is no shared `ui_utils.py` — create a new module if a component is reused across shelves
 - Use constants from `models/constants.py` for text and configuration
 - Follow established error handling patterns with centralized templates
 - Convert internal 0-1 scale to percentages for user display
 
 ## Testing
 
-No automated suite in the tree (the former `tests/` was removed with the refactor arc). Verification method of record: golden-output comparison via `numpy.testing`. Harness strategy is an open decision.
+Standard-library `unittest` suite in `tests/` — run `python -m unittest discover` from `program/` (157 tests covering calculations, data loading, importing, presenter, spectra, state, and report rendering). Report tests compare against golden outputs via `numpy.testing`. Harness strategy beyond this suite is an open decision.
 
 ## Deployment
 
@@ -193,8 +194,8 @@ a real rewrite of data + search, not planned.
 
 ### Open items & known debts
 
-- **Test harness**: no automated suite; strategy undecided (golden-output diffs were the verification method)
-- **Reporting stays a service**: do not fold `services/reporting.py` into the presenter
+- **Test harness**: `unittest` suite covers the core services (see §Testing); broader strategy (CI, coverage gaps) undecided
+- **Reporting stays a service**: PNG report generation lives in `services/visualization.py` (driven from `views/actions.py`); do not fold it into the presenter
 - **Presenter VMs carry `go.Figure` objects** — couples view models to Plotly; revisit only on a UI-framework swap
 - **Per-shelf manufacturer option lists and reflector target-type lists are built in views** — should come from presenter/constants
 - **`my_filters_only` toggle applies only in the quick-search branch**, not advanced search (product decision pending)

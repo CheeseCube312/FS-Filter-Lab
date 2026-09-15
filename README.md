@@ -53,11 +53,11 @@ Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Pr
 
 ### Advanced Features
 - **Advanced Filter Search**: Filter by manufacturer, hex color, or transmission at specific wavelengths with live sparkline previews
-- **Advanced Reflector Search**: Filter by organization, package, or target type
+- **Advanced Reflector Search**: Filter surfaces by organization or target type (applies to imported files carrying that metadata)
 - **My Filters Manager**: Curate your own filter collection with a "My Filters only" toggle
 - **White Balance from Surface Reference**: Use any loaded reflector as the white balance source
 - **Channel Mixer**: Apply custom RGB channel mixing matrices
-- **Import Data**: Add your own filters, illuminants, camera QE curves, film profiles, and reflector data via the import dialog
+- **Import Data**: Add your own filters, illuminants, camera QE curves, film profiles, and reflector data from the import cards on the Data tab
 - **Automatic Cache**: Cached data rebuilds silently whenever data files change — nothing to manage
 
 ## Project Structure
@@ -75,6 +75,7 @@ FS-FilterLab/
     ├── models/           # Data structures and constants
     ├── services/         # Business logic (calculations, presenter, data loading, state)
     ├── views/            # NiceGUI UI components
+    ├── tests/            # unittest suite
     ├── data/             # Spectral data files (git submodule)
     │   ├── filters_data/
     │   ├── QE_data/
