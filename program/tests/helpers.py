@@ -165,7 +165,6 @@ def import_sandbox():
         folders = {k: str(root / name) for k, name in _FOLDERS.items()}
         output = {
             "reports": str(root / "output"),
-            "ecosis": str(root / "ecosis"),
             "filter_import": str(root / "filters_data"),
         }
         for path in list(folders.values()) + list(output.values()):

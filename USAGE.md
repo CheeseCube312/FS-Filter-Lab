@@ -68,7 +68,7 @@ This guide walks you through using FS FilterLab for optical analysis.
 3. **Illuminants**: Add custom light sources
 4. **Camera QE**: Add digital camera sensor profiles
 5. **Film**: Add film profiles (slide, color negative, or B&W) — TSV files with `# Key: Value` headers: `Manufacturer`, `Name`, `Type` required; `ISO`, `Process`, `Notes` optional
-6. **Reflectance/ECOSIS**: Add surface material data (single-spectrum or ECOSIS multi-spectrum CSV)
+6. **Reflectance**: Add surface material data (single-spectrum CSV)
 
 ### Report Generation
 1. Select your desired filter configuration

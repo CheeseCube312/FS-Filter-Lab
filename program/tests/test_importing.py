@@ -1,4 +1,4 @@
-"""services.importing — the six single-spectrum importers + ECOSIS.
+"""services.importing — the six single-spectrum importers.
 
 Round-trip focus: synthetic CSV in, loader-contract TSV out (column names,
 0-100 file scale, filenames, comment headers), with the exact hand-computed
@@ -303,61 +303,6 @@ class ReflectorImport(TestCase):
             df = read_tsv(path)
             self.assertEqual(int(df["Wavelength"].min()), 300)
             self.assertEqual(int(df["Wavelength"].max()), 1100)
-
-
-def ecosis_csv(scales):
-    """Wide ECOSIS-style CSV: metadata cols + 11 wavelength columns."""
-    wl_cols = [str(wl) for wl in range(300, 850, 50)]
-    rows = []
-    for i, scale in enumerate(scales):
-        row = {"Sample": f"Plant{chr(65 + i)}", "Organization": "Uni",
-               "Species": "Ficus"}
-        for j, wl in enumerate(wl_cols):
-            base = 0.8 - j * 0.05 if scale == "fraction" else 80.0 - j * 5.0
-            row[wl] = "" if (i == 0 and j == 3) else base  # one interior blank
-        rows.append(row)
-    df = pd.DataFrame(rows)
-    return df.to_csv(index=False)
-
-
-class EcosisImport(TestCase):
-    def test_fractions_are_scaled_to_the_0_100_file_convention(self):
-        with import_sandbox() as (root, folders, output):
-            src = root / "ecosis_source.csv"
-            src.write_text(ecosis_csv(["fraction"]), encoding="utf-8")
-            out_dir = root / "ecosis_out"
-            out_dir.mkdir(parents=True, exist_ok=True)  # UI creates it first
-            created = imp.import_ecosis_csv(str(src), str(out_dir),
-                                            name_column="Sample",
-                                            relevant_metadata=["Species"])
-            self.assertEqual(len(created), 1)
-            self.assertEqual(created[0].name, "PlantA_Uni_Ficus_1.tsv")
-            text = created[0].read_text(encoding="utf-8")
-            self.assertIn("# name_for_search\tSample", text)
-            self.assertIn("# relevant_metadata\tSpecies", text)
-            df = read_tsv(created[0])
-            self.assertEqual(list(df.columns), ["Wavelength", "Reflectance"])
-            self.assertEqual(len(df), 801)  # 300..1100 on the standard grid
-            self.assertClose(float(df["Reflectance"].max()), 80.0)  # 0.8 * 100
-
-    def test_percent_scaled_sources_pass_through_unscaled(self):
-        with import_sandbox() as (root, folders, output):
-            src = root / "ecosis_source.csv"
-            src.write_text(ecosis_csv(["percent"]), encoding="utf-8")
-            out_dir = root / "ecosis_out"
-            out_dir.mkdir(parents=True, exist_ok=True)  # UI creates it first
-            created = imp.import_ecosis_csv(str(src), str(out_dir))
-            df = read_tsv(created[0])
-            self.assertClose(float(df["Reflectance"].max()), 80.0)
-            # No double-scaling: 80 stayed 80 (only <=1.5 data is scaled up).
-
-    def test_fewer_than_ten_wavelength_columns_raises(self):
-        with import_sandbox() as (root, folders, output):
-            src = root / "tiny.csv"
-            src.write_text("Sample,300,400\nPlantA,0.5,0.4\n", encoding="utf-8")
-            with self.assertRaises(ValueError) as ctx:
-                imp.import_ecosis_csv(str(src), str(root / "out"))
-            self.assertIn("Not enough wavelength columns", str(ctx.exception))
 
 
 if __name__ == "__main__":

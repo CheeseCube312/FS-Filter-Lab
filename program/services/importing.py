@@ -28,14 +28,8 @@ Import adapters (one per on-disk format):
 - import_reflectance_absorption_from_csv: surface spectrum -> TSV
   (reflectors/plant|other; value column is always 'Reflectance' - the
   loader contract in services/data.py)
-- import_ecosis_csv: wide ECOSIS CSV -> one comment-header TSV per sample
-  (reflectors/Ecosis/...); sample values are normalized to the 0-100 file
-  scale (the loaders divide by 100 on load)
-
-All import_* functions except import_ecosis_csv return
-(success: bool, message: str) tuples for consistent error handling in the
-UI layer; import_ecosis_csv returns the list of created files and raises
-ValueError on failure (views/actions.py wraps the call in try/except).
+All import_* functions return (success: bool, message: str) tuples for
+consistent error handling in the UI layer.
 """
 
 import pandas as pd
@@ -243,34 +237,6 @@ def _interpolate_spectrum(wavelengths, values, target_wavelengths, extrap_lower=
     return np.clip(np.round(interpolated, 3), 0.0, None)
 
 
-def _interp_with_extrapolation(wavelengths, values, target_wavelengths):
-    """Linear interpolation onto ``target_wavelengths``, extending the first and
-    last segments linearly beyond the data range (replaces scipy's
-    ``interp1d(..., fill_value='extrapolate')``; call sites guarantee >= 2 points)."""
-    wavelengths = np.asarray(wavelengths, dtype=float)
-    values = np.asarray(values, dtype=float)
-    target = np.asarray(target_wavelengths, dtype=float)
-    
-    # Match the previous scipy behaviour (assume_sorted=False): sort by
-    # wavelength first if the input is not already ascending.
-    if np.any(np.diff(wavelengths) < 0):
-        order = np.argsort(wavelengths)
-        wavelengths, values = wavelengths[order], values[order]
-    
-    # Interior points; np.interp clamps outside the data range, fixed up below.
-    interpolated = np.interp(target, wavelengths, values)
-    
-    if target[0] < wavelengths[0]:
-        slope = (values[1] - values[0]) / (wavelengths[1] - wavelengths[0])
-        below = target < wavelengths[0]
-        interpolated[below] = values[0] + slope * (target[below] - wavelengths[0])
-    if target[-1] > wavelengths[-1]:
-        slope = (values[-1] - values[-2]) / (wavelengths[-1] - wavelengths[-2])
-        above = target > wavelengths[-1]
-        interpolated[above] = values[-1] + slope * (target[above] - wavelengths[-1])
-    return interpolated
-
-
 def _sanitize_filename(name):
     """Convert a string to a valid import filename (spaces -> underscores).
 
@@ -280,166 +246,6 @@ def _sanitize_filename(name):
     on-disk names future imports produce and orphan existing files.
     """
     return ''.join(c for c in name if c.isalnum() or c in (' ', '_')).rstrip().replace(' ', '_')
-
-
-def import_ecosis_csv(file_path: str, output_dir: str, name_column: Optional[str] = None, relevant_metadata: Optional[List[str]] = None) -> List[str]:
-    """
-    Import ECOSIS CSV file directly. User explicitly chooses this format.
-    
-    Args:
-        file_path: Path to ECOSIS CSV file
-        output_dir: Directory to save processed files
-        name_column: Optional column name to use for search names (stores column name, not value)
-        relevant_metadata: Optional list of column names for Surface Color Preview display
-        
-    Returns:
-        List of created file paths
-    """
-    try:
-        df = pd.read_csv(file_path, sep=None, engine="python")
-        
-        if df.empty:
-            raise ValueError("CSV file is empty")
-            
-        # Find wavelength columns (numeric headers)
-        wavelength_cols = []
-        metadata_cols = []
-        
-        for col in df.columns:
-            try:
-                wavelength = float(str(col).strip())
-                # Accept wavelengths in reasonable spectral range
-                if 200 <= wavelength <= 3000:
-                    wavelength_cols.append((col, wavelength))
-                else:
-                    metadata_cols.append(col)
-            except (ValueError, TypeError):
-                metadata_cols.append(col)
-        
-        if len(wavelength_cols) < 10:
-            raise ValueError(f"Not enough wavelength columns found: {len(wavelength_cols)}. Expected at least 10.")
-            
-        # Sort wavelength columns by wavelength value
-        wavelength_cols.sort(key=lambda x: x[1])
-        
-        created_files = []
-        
-        for seq, (index, row) in enumerate(df.iterrows(), start=1):
-            # Create sample name from available metadata - use any non-empty metadata columns
-            sample_parts = []
-            
-            # Go through all metadata columns and use the first few non-empty ones
-            for col_name in metadata_cols:
-                if pd.notna(row[col_name]) and str(row[col_name]).strip():
-                    value = str(row[col_name]).strip()
-                    if value.lower() != 'nan' and value != '':
-                        sample_parts.append(value)
-                        if len(sample_parts) >= 3:  # Limit to first 3 meaningful metadata values
-                            break
-            
-            # Fallback to row index if no metadata found
-            if not sample_parts:
-                sample_parts = [f"Sample_{seq}"]
-            
-            # Clean sample name for filename
-            sample_name = "_".join(sample_parts).replace(" ", "_")
-            sample_name = re.sub(r'[^\w\-_\.]', '_', sample_name)
-            sample_name = re.sub(r'_{2,}', '_', sample_name).strip('_')
-            
-            # Limit filename length
-            if len(sample_name) > 50:
-                sample_name = sample_name[:50]
-            
-            # Extract spectral data and handle NaN properly
-            spectral_wavelengths = []
-            spectral_values = []
-            
-            for col_name, wavelength in wavelength_cols:
-                value = row[col_name]
-                # Only include data points with valid values
-                if pd.notna(value) and value != '':
-                    try:
-                        float_val = _safe_float(value)
-                        if not np.isnan(float_val):
-                            spectral_wavelengths.append(wavelength)
-                            spectral_values.append(float_val)
-                    except (ValueError, TypeError):
-                        continue  # Skip invalid values
-            
-            if len(spectral_wavelengths) < 5:
-                logger.warning("Skipping sample %s - insufficient valid data points (%d)", sample_name, len(spectral_wavelengths))
-                continue
-            
-            spectral_wavelengths = np.array(spectral_wavelengths)
-            spectral_values = np.array(spectral_values)
-            
-            # Filter to INTERP_GRID range (300-1100nm) before interpolation
-            wl_min, wl_max = INTERP_GRID[0], INTERP_GRID[-1]
-            mask = (spectral_wavelengths >= wl_min) & (spectral_wavelengths <= wl_max)
-            
-            if np.sum(mask) < 5:
-                logger.warning("Skipping sample %s - insufficient data in %s-%snm range", sample_name, wl_min, wl_max)
-                continue
-                
-            filtered_wavelengths = spectral_wavelengths[mask]
-            filtered_values = spectral_values[mask]
-            # Normalize to the 0-100 file convention (services/data.py divides
-            # reflectance by 100 on load). ECOSIS CSVs ship 0-1 fractions;
-            # 0-100-scaled sources pass through untouched.
-            if filtered_values.size and filtered_values.max() <= 1.5:
-                filtered_values = filtered_values * 100.0
-
-            
-            # Interpolate to standard 1nm grid (300-1100nm)
-            interp_values = _interp_with_extrapolation(filtered_wavelengths, filtered_values, INTERP_GRID)
-            
-            # Prepare TSV content with metadata as header comments
-            rows = []
-            
-            # Add CSV metadata as comments
-            if metadata_cols:
-                rows.append("# CSV Metadata:")
-                for col in metadata_cols:
-                    value = row[col] if pd.notna(row[col]) and row[col] != '' else ''
-                    if value:
-                        rows.append(f"# {col}\t{value}")
-                rows.append("#")  # Blank comment line
-            
-            # Add name_for_search field if user selected a column (store column name, not value)
-            if name_column and name_column in metadata_cols:
-                rows.append(f"# name_for_search	{name_column}")
-                rows.append("#")  # Blank comment line
-            
-            # Add relevant_metadata field if user selected columns (store column names, not values)
-            if relevant_metadata:
-                # Only include columns that exist in this CSV file
-                valid_relevant = [col for col in relevant_metadata if col in metadata_cols]
-                if valid_relevant:
-                    relevant_str = "|".join(valid_relevant)  # Join multiple column names with |
-                    rows.append(f"# relevant_metadata	{relevant_str}")
-                    rows.append("#")  # Blank comment line
-            
-            # Simple data table: just Wavelength and Reflectance
-            rows.append("Wavelength\tReflectance")
-            
-            # Data rows - clean and simple
-            for wl, refl in zip(INTERP_GRID, interp_values):
-                rows.append(f"{wl}\t{refl:.10f}")
-            
-            # Save as TSV file  
-            filename = f"{sample_name}_{seq}.tsv"  # Sequence number avoids duplicates
-            filepath = Path(output_dir) / filename
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(rows))
-            
-            created_files.append(filepath)
-            
-        logger.info("Successfully processed %d ECOSIS samples", len(created_files))
-        return created_files
-        
-    except Exception as e:
-        raise ValueError(f"Error importing ECOSIS CSV: {str(e)}")
 
 
 def _get_extrapolation_suffix(extrap_lower, extrap_upper):

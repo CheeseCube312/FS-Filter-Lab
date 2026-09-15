@@ -14,7 +14,7 @@ services/    # Framework-agnostic data processing and logic
   - visualization.py   # Plotly charts for UI views + matplotlib PNG report rendering
   - presenter.py       # View-model builder; advanced search compute
   - data.py            # TSV loading, caching, data normalization
-  - importing.py       # Data import (filters, film profiles, QE, ECOSIS)
+  - importing.py       # Data import (filters, film profiles, QE)
   - spectra.py         # Pure spectral-physics core (combine, integrate, WB gains)
   - state_manager.py   # Application state management
 views/       # NiceGUI UI components (zero computation — render view models only)
@@ -22,7 +22,7 @@ views/       # NiceGUI UI components (zero computation — render view models on
   - setup_rail.py       # Setup rail controls
   - shelf_data.py       # Data shelf + per-card CSV import expansions
   - shelf_filters.py    # Filters shelf: quick/advanced search, sparkline cards, My Filters
-  - shelf_reflectors.py # Reflectors shelf: library search, ECOSIS import with preview
+  - shelf_reflectors.py # Reflectors shelf: library search, surface actions
   - actions.py          # Imperative action handlers (imports, report generation)
   - film_match.py       # Film Match feature view
   - sensor_response.py  # Sensor response view
@@ -34,7 +34,7 @@ data/        # Spectral data files (TSV format)
   - QE_data/          # Camera sensor QE curves
   - film_data/        # Sensor/film profiles (digital, slide, color negative, B&W)
   - illuminants/      # Light source spectra
-  - reflectors/       # Surface reflectance library (incl. ECOSIS imports)
+  - reflectors/       # Surface reflectance library
 cache/       # Auto-generated cache files (one .npz per dataset)
 output/      # Generated PNG reports
 ```
@@ -89,7 +89,7 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 - **My Filters Manager**: curate owned filters, persisted to `data/filters_data/my_filters.json`, with a "My Filters only" sidebar toggle
 - **White Balance from Surface Reference**: pick any loaded reflector as WB source; gains recompute against it (`AppState.recompute_white_balance`, `wb_reference_surface` state)
 - **Film Emulation Target**: overlay a film profile's response as a target with its own independent filter stack and white balance
-- **Imports**: per-card CSV upload expansion cards on the Data shelf and preview-before-commit ECOSIS import on the Reflectors shelf (`views/shelf_data.py`, `views/shelf_reflectors.py`); dispatched via `views/actions.py` → `services/importing.py`
+- **Imports**: per-card CSV upload expansion cards on the Data shelf (`views/shelf_data.py`); dispatched via `views/actions.py` → `services/importing.py`
 
 ## Data Flow
 
@@ -161,7 +161,7 @@ No automated suite in the tree (the former `tests/` was removed with the refacto
 - **UI displays**: 0-100% (conversion at display layer only)
 - **Filter combinations**: natural multiplication in 0-1 scale (0.5 × 0.8 = 0.4)
 - **Data loaders**: divide by 100 unconditionally — sole exception: the film-profile loader keeps a `> 1.5` dual-scale guard for legacy 0-1 files (see the scale-convention comment in `models/constants.py`)
-- **Importers**: save as 0-100% to files, clamping negatives to 0; ECOSIS reflectance import normalizes 0-1 inputs up (≤ 1.5 check)
+- **Importers**: save as 0-100% to files, clamping negatives to 0
 
 ### Performance Issues
 - **Data loading**: cache lives in `cache/` as one `.npz` per dataset; delete the folder to force a cold reload
@@ -183,7 +183,7 @@ a real rewrite of data + search, not planned.
    `refresh()` path; no listener machinery; one key per concept.
 3. **One importer pipeline** — generic parse → validate → interpolate → write in
    `services/importing.py`, plus thin per-type metadata adapters (filters,
-   illuminants, camera QE, film, reflectance/ECOSIS).
+   illuminants, camera QE, film, reflectance).
 4. **Lean dependencies** — numpy, plotly, nicegui stay; pandas is structural,
    keep it; matplotlib stays only while PNG reports stay (Plotly PNG export
    would need kaleido ≈ Chromium, so matplotlib is the light option).
@@ -195,7 +195,6 @@ a real rewrite of data + search, not planned.
 
 - **Test harness**: no automated suite; strategy undecided (golden-output diffs were the verification method)
 - **Reporting stays a service**: do not fold `services/reporting.py` into the presenter
-- **ECOSIS import is format-locked** to the observed block layout — verify against real data before touching the pipeline
 - **Presenter VMs carry `go.Figure` objects** — couples view models to Plotly; revisit only on a UI-framework swap
 - **Per-shelf manufacturer option lists and reflector target-type lists are built in views** — should come from presenter/constants
 - **`my_filters_only` toggle applies only in the quick-search branch**, not advanced search (product decision pending)

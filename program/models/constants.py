@@ -10,8 +10,7 @@ Internally, all spectral data (filters, QE, reflectors) is converted to FRACTION
 - This enables natural multiplication for filter combinations
 - UI conversions to percentages (* 100) happen only for display
 - Filter and reflector loaders divide by 100 unconditionally on load, so
-  importers write files in 0-100 scale (import_ecosis_csv normalizes
-  0-1-scaled ECOSIS sources at import time)
+  importers write files in 0-100 scale
 - Exception: the film-profile loader accepts either scale; it divides only
   when the interpolated maximum exceeds 1.5
 
@@ -58,7 +57,6 @@ FILM_TYPES = ('color_negative', 'color_slide', 'bw')
 # Output directory paths
 OUTPUT_FOLDERS = {
     'reports': "program/output",  # Main output directory for generated reports
-    'ecosis': "program/data/reflectors/Ecosis",  # ECOSIS import destination
     'filter_import': "program/data/filters_data"  # Filter import destination
 }
 
@@ -83,11 +81,8 @@ TSV_COLUMNS = {
 # Metadata field names used in comment-based TSV files (# key\tvalue format)
 METADATA_FIELDS = {
     'name': 'Name',                    # Display name for the spectrum
-    'name_for_search': 'name_for_search',  # Column name to use for naming (not the value)
-    'species': 'species',              # Species name (ECOSIS data)
     'sample_type': 'sample_type',      # Sample type classification
     'collector': 'collector',          # Data collector information
-    'package_title': 'Package Title'   # ECOSIS package title
 }
 
 # Header field names used in sensor/film TSV files (# Key: Value format)

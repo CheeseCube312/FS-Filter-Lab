@@ -631,27 +631,14 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray, Dict[
     metadata['source_file'] = str(path)
     metadata['source_folder'] = path.parent.name
     
-    # Extract name from metadata, prioritizing name_for_search field
+    # Extract name from metadata, falling back to the filename
     name = None
-    
-    # First priority: use the user-selected name_for_search field (now contains column name, not value)
-    if METADATA_FIELDS['name_for_search'] in metadata and metadata[METADATA_FIELDS['name_for_search']].strip():
-        column_name = metadata[METADATA_FIELDS['name_for_search']].strip()
-        # Look up the actual value using the column name
-        if column_name in metadata and metadata[column_name].strip():
-            name = metadata[column_name].strip()
-    
-    if not name:
-        # Fallback: try common name fields from metadata
-        name_fields = [METADATA_FIELDS['species'], METADATA_FIELDS['name'], 
-                      METADATA_FIELDS['sample_type'], METADATA_FIELDS['collector'], 
-                      METADATA_FIELDS['package_title']]
-        for field in name_fields:
-            if field in metadata and metadata[field].strip():
-                name = metadata[field].strip()
-                break
-    
-    # Final fallback to filename if no name found in metadata
+    for field in (METADATA_FIELDS['name'], METADATA_FIELDS['sample_type'],
+                  METADATA_FIELDS['collector']):
+        value = metadata.get(field, '')
+        if value.strip():
+            name = value.strip()
+            break
     if not name:
         name = path.stem
     

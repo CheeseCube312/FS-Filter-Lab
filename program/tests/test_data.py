@@ -251,19 +251,6 @@ class IlluminantLoader(TestCase):
 
 
 class ReflectorLoader(TestCase):
-    def test_name_for_search_resolves_through_the_column_indirection(self):
-        with data_sandbox() as (root, folders):
-            wl = [400 + 10 * i for i in range(20)]
-            write_reflector_tsv(
-                Path(folders["reflectors"]) / "leaf.tsv", wl, [50.0] * 20,
-                header={"Organization": "Uni", "name_for_search": "Common Name",
-                        "Common Name": "Ficus Leaf", "IsDefault": "yes"})
-            c = data_mod.load_reflector_collection()
-            self.assertEqual(len(c.reflectors), 1)
-            self.assertEqual(c.reflectors[0].name, "Ficus Leaf")
-            self.assertClose(float(c.reflector_matrix[0][GRID == 400][0]), 0.5)
-            self.assertEqual(c.reflectors[0].metadata["source_file"],
-                             str(Path(folders["reflectors"]) / "leaf.tsv"))
 
     def test_too_few_valid_points_skips_the_file(self):
         self.assertGreater(MIN_DATA_POINTS, 1)  # assumption this test relies on

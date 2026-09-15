@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Optional, Set
 import numpy as np
 from nicegui import ui
 
-from models.constants import FILM_TYPES, OUTPUT_FOLDERS
+from models.constants import FILM_TYPES
 from models.core import AppData, ChannelMixerSettings
 from services.visualization import generate_application_report
 from services.data import (
@@ -30,7 +30,6 @@ from services.data import (
     load_sensor_profiles,
 )
 from services.importing import (
-    import_ecosis_csv,
     import_filter_from_csv,
     import_film_from_csv,
     import_illuminant_from_csv,
@@ -590,41 +589,6 @@ def _import_spectrum_csv(app_state: AppState, data: AppData, payload: Dict) -> S
     )
 
 
-def _import_ecosis(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    content: bytes = payload.get("content") or b""
-    if not content:
-        _record_import(app_state, "ecosis", False, "No ECOSIS file staged.")
-        ui.notify("No ECOSIS file staged", type="warning")
-        return _IMPORT_FAILED
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", suffix=".csv", prefix="ecosis_", delete=False
-        ) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        created = import_ecosis_csv(tmp_path, OUTPUT_FOLDERS["ecosis"])
-    except ValueError as exc:
-        _record_import(app_state, "ecosis", False, f"ECOSIS import failed: {exc}")
-        ui.notify(f"ECOSIS import failed: {exc}", type="negative")
-        return _IMPORT_FAILED
-    except Exception:
-        logger.exception("ECOSIS import failed unexpectedly")
-        _record_import(
-            app_state, "ecosis", False, "ECOSIS import failed — see terminal log"
-        )
-        ui.notify("ECOSIS import failed — see terminal log", type="negative")
-        return _IMPORT_FAILED
-    finally:
-        if tmp_path:
-            Path(tmp_path).unlink(missing_ok=True)
-    _reload_reflectors(app_state, data)
-    message = f"Imported {len(created)} ECOSIS spectra"
-    _record_import(app_state, "ecosis", True, message)
-    ui.notify(message, type="positive")
-    return _IMPORT_OK
-
-
 _HANDLERS = {
     "select_sensor": _select_sensor,
     "select_film": _select_film,
@@ -648,7 +612,6 @@ _HANDLERS = {
     "remove_surface": _remove_surface,
     "wb_from_surface": _wb_from_surface,
     "reset_surface_wb": _reset_surface_wb,
-    "import_ecosis": _import_ecosis,
     "import_filter_csv": _import_filter_csv,
     "import_illuminant_csv": _import_illuminant_csv,
     "import_qe_csv": _import_qe_csv,

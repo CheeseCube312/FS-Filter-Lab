@@ -1,8 +1,7 @@
 """Data shelf: all data importers as cards, digitized-CSV fast path first (§3.3).
 
 Cards stage an upload in ``page_state`` and only write to disk when the
-Import button dispatches (the ECOSIS card shares the Reflectors shelf's
-preview-before-commit flow). Success rebuilds the whole page through the
+Import button dispatches. Success rebuilds the whole page through the
 import actions; failure re-renders this shelf so the per-card status line
 (from ``AppState.last_import``) shows the message.
 """
@@ -13,7 +12,6 @@ from typing import Any, Callable, Dict
 from nicegui import ui
 
 from models.constants import FILM_TYPES
-from views.shelf_reflectors import render_ecosis_card
 
 _DIGITIZED_BRAND = "Digitized"
 
@@ -48,8 +46,6 @@ def render_data_shelf(ctx: Dict[str, Any]) -> None:
         button_label="Import surface spectrum",
         fields=_spectrum_fields, payload_fn=_spectrum_payload,
     )
-    with ui.expansion("ECOSIS CSV (multi-surface)", icon="cloud_download").classes("w-full"):
-        render_ecosis_card(ctx, ctx["page_state"])
     _staged_import_card(
         ctx, key="illuminant",
         title="Illuminant CSV", icon="wb_sunny",

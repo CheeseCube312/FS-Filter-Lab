@@ -14,7 +14,6 @@ import plotly.graph_objects as go
 from models.core import ReflectorCollection
 from services.presenter import (
     QE_ILLUMINANT_REQUIRED_MSG,
-    prepare_ecosis_preview,
     prepare_filter_analysis,
     prepare_filter_rows,
     prepare_film_match,
@@ -98,7 +97,6 @@ class PresenterReadOnly(TestCase):
             prepare_film_match(state, data)
             prepare_surfaces(state, data)
             prepare_reflectors_shelf(state, data)
-            prepare_ecosis_preview(b"Wavelength,Reflectance\n300,0.5\n", "eco.csv")
             prepare_filter_rows(state, data, query="nd")
             search_filters(collection.df, collection.filter_matrix, state)
             after = snapshot_state(state)

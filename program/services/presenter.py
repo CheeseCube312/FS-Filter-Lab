@@ -785,39 +785,6 @@ def prepare_reflectors_shelf(
 
 
 # =============================================================================
-# ECOSIS IMPORT PREVIEW (preview-before-commit; commit runs via actions)
-# =============================================================================
-
-@dataclass
-class EcosisPreviewVM:
-    """Parsed summary of an ECOSIS CSV, shown before anything is written."""
-    filename: str
-    n_rows: int
-    n_cols: int
-    sample_names: List[str]
-    organizations: List[str]
-    error: Optional[str] = None
-
-
-def prepare_ecosis_preview(content: bytes, filename: str = "") -> EcosisPreviewVM:
-    """Parse an ECOSIS CSV in memory for display — no files are written."""
-    try:
-        df = pd.read_csv(io.BytesIO(content), sep=None, engine="python")
-    except Exception as exc:
-        return EcosisPreviewVM(
-            filename=filename, n_rows=0, n_cols=0,
-            sample_names=[], organizations=[], error=str(exc),
-        )
-    orgs = sorted(set(df["Organization"].astype(str))) if "Organization" in df.columns else []
-    name_col = "Sample" if "Sample" in df.columns else df.columns[0]
-    samples = [str(v) for v in df[name_col].head(8).tolist()]
-    return EcosisPreviewVM(
-        filename=filename, n_rows=len(df), n_cols=int(df.shape[1]),
-        sample_names=samples, organizations=orgs,
-    )
-
-
-# =============================================================================
 # FILM MATCH INSTRUMENT (UX_SPEC.md §7.2)
 # =============================================================================
 

@@ -1,9 +1,9 @@
-"""Reflectors shelf: library search, surface/WB actions, ECOSIS import (§3.3)."""
+"""Reflectors shelf: library search, surface/WB actions."""
 from typing import Any, Dict
 
 from nicegui import ui
 
-from services.presenter import prepare_ecosis_preview, prepare_reflectors_shelf
+from services.presenter import prepare_reflectors_shelf
 
 _ROW_LIMIT = 40
 
@@ -53,9 +53,6 @@ def render_reflectors_shelf(ctx: Dict[str, Any]) -> None:
 
     results_section()
 
-    with ui.expansion("ECOSIS import (preview before commit)", icon="upload").classes("w-full"):
-        render_ecosis_card(ctx, page_state)
-
 
 def _sync(target_list: list, value) -> None:
     target_list[:] = [str(v) for v in (value or [])]
@@ -101,60 +98,4 @@ def _render_row(ctx: Dict[str, Any], row) -> None:
                     "add_surface", {"source_file": r.source_file}
                 ),
             ).props("flat dense round size=sm").tooltip("Add as surface")
-
-
-def render_ecosis_card(ctx: Dict[str, Any], page_state: Dict[str, Any]) -> None:
-    ui.label(
-        "Upload an ECOSIS multi-spectrum CSV. Nothing is written to disk until "
-        "you confirm the import."
-    ).classes("text-caption text-grey-7")
-
-    @ui.refreshable
-    def preview_section():
-        pvm = page_state.get("ecosis_preview")
-        if pvm is None:
-            return
-        if pvm.error:
-            ui.label(f"Could not parse file: {pvm.error}").classes("text-body2 text-negative")
-            return
-        with ui.card().classes("w-full q-pa-sm"):
-            ui.label(f"{pvm.filename}: {pvm.n_rows} rows × {pvm.n_cols} columns").classes(
-                "text-body2"
-            )
-            if pvm.organizations:
-                shown = ", ".join(pvm.organizations[:6]) + (
-                    "…" if len(pvm.organizations) > 6 else ""
-                )
-                ui.label(f"Organizations: {shown}").classes("text-caption text-grey-6")
-            tail = "…" if pvm.n_rows > 8 else ""
-            ui.label("Samples: " + ", ".join(pvm.sample_names) + tail).classes(
-                "text-caption text-grey-6"
-            )
-            ui.button(
-                f"Import {pvm.n_rows} spectra", icon="download_done",
-                on_click=lambda: ctx["dispatch"]("import_ecosis", {
-                    "content": page_state.get("ecosis_content"),
-                    "filename": pvm.filename,
-                }),
-            ).props("unelevated dense color=positive")
-
-    preview_section()
-
-    ui.upload(
-        auto_upload=True,
-        on_upload=lambda e: _handle_upload(ctx, e, preview_section),
-    ).classes("w-full max-w-xs").props("accept=.csv label='Choose ECOSIS CSV'")
-
-    # Persistent per-card import status, shared with the Data shelf cards.
-    # Function-local import: shelf_data imports this module at module level.
-    from views.shelf_data import _status_line
-
-    _status_line(ctx["app_state"], "ecosis")
-
-
-def _handle_upload(ctx: Dict[str, Any], event, preview_section) -> None:
-    content = event.content.read()
-    ctx["page_state"]["ecosis_content"] = content
-    ctx["page_state"]["ecosis_preview"] = prepare_ecosis_preview(content, event.name)
-    preview_section.refresh()
 

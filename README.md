@@ -57,7 +57,7 @@ Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Pr
 - **My Filters Manager**: Curate your own filter collection with a "My Filters only" toggle
 - **White Balance from Surface Reference**: Use any loaded reflector as the white balance source
 - **Channel Mixer**: Apply custom RGB channel mixing matrices
-- **Import Data**: Add your own filters, illuminants, camera QE curves, film profiles, and reflector data via the import dialog (TSV or ECOSIS CSV)
+- **Import Data**: Add your own filters, illuminants, camera QE curves, film profiles, and reflector data via the import dialog
 - **Automatic Cache**: Cached data rebuilds silently whenever data files change — nothing to manage
 
 ## Project Structure
