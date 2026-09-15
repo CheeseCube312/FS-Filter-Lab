@@ -54,7 +54,7 @@ def render_reflectors_shelf(ctx: Dict[str, Any]) -> None:
     results_section()
 
     with ui.expansion("ECOSIS import (preview before commit)", icon="upload").classes("w-full"):
-        _render_ecosis(ctx, page_state)
+        render_ecosis_card(ctx, page_state)
 
 
 def _sync(target_list: list, value) -> None:
@@ -103,7 +103,7 @@ def _render_row(ctx: Dict[str, Any], row) -> None:
             ).props("flat dense round size=sm").tooltip("Add as surface")
 
 
-def _render_ecosis(ctx: Dict[str, Any], page_state: Dict[str, Any]) -> None:
+def render_ecosis_card(ctx: Dict[str, Any], page_state: Dict[str, Any]) -> None:
     ui.label(
         "Upload an ECOSIS multi-spectrum CSV. Nothing is written to disk until "
         "you confirm the import."
@@ -144,6 +144,12 @@ def _render_ecosis(ctx: Dict[str, Any], page_state: Dict[str, Any]) -> None:
         auto_upload=True,
         on_upload=lambda e: _handle_upload(ctx, e, preview_section),
     ).classes("w-full max-w-xs").props("accept=.csv label='Choose ECOSIS CSV'")
+
+    # Persistent per-card import status, shared with the Data shelf cards.
+    # Function-local import: shelf_data imports this module at module level.
+    from views.shelf_data import _status_line
+
+    _status_line(ctx["app_state"], "ecosis")
 
 
 def _handle_upload(ctx: Dict[str, Any], event, preview_section) -> None:

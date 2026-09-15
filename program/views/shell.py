@@ -8,6 +8,7 @@ from views.film_match import render_film_match
 from views.reference import render_reference
 from views.sensor_response import render_sensor_response
 from views.setup_rail import render_setup_rail
+from views.shelf_data import render_data_shelf
 from views.shelf_filters import render_filters_shelf
 from views.shelf_reflectors import render_reflectors_shelf
 from views.surfaces import render_surfaces
@@ -59,7 +60,7 @@ def build_page(app_state, data) -> None:
 
     @ui.refreshable
     def data_shelf_panel():
-        _placeholder("Data shelf lands in slice U4 (importers; digitized-CSV fast path).")
+        render_data_shelf(ctx)
 
     # --- Targeted refresh + dispatch (§5 contract) ---------------------------
     def refresh_panel(key: str) -> None:
@@ -143,7 +144,3 @@ def build_page(app_state, data) -> None:
             with ui.tab_panel("reference"):
                 reference_panel()
 
-
-def _placeholder(message: str) -> None:
-    with ui.card().classes("w-full"):
-        ui.label(message).classes("text-body2 text-grey-6")

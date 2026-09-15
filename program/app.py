@@ -19,12 +19,11 @@ if str(_program_dir) not in sys.path:
 
 from nicegui import ui
 
-from services.app_operations import initialize_application_data
+from services.data import initialize_application_data
 from services.state_manager import AppState
 from views.shell import build_page
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 def _apply_startup_defaults(app_state: AppState, data) -> None:

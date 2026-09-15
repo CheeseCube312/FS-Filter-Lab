@@ -16,7 +16,7 @@ def render_filters_shelf(ctx: Dict[str, Any]) -> None:
     ui.label("Filters").classes("text-h6")
 
     search = ui.input(
-        placeholder="Search by name or number…",
+        placeholder="Search by name, number, or brand…  e.g. “lee oklahoma”",
         value=page_state.get("filter_query", ""),
     ).classes("w-full").props('outlined dense debounce="300"')
 
@@ -62,7 +62,9 @@ def _render_advanced(ctx: Dict[str, Any]) -> None:
         multiple=True,
         value=list(app_state.advanced_search_manufacturers),
         label="Manufacturers",
-        on_change=lambda e: _set_manufacturers(app_state, e.value),
+        on_change=lambda e: ctx["dispatch"](
+            "set_advanced_manufacturers", {"value": e.value}
+        ),
     ).classes("w-full").props("outlined dense use-chips")
 
     ui.label("Transmission criteria (ALL must match)").classes(
@@ -73,31 +75,44 @@ def _render_advanced(ctx: Dict[str, Any]) -> None:
         with ui.row().classes("w-full items-center no-wrap"):
             ui.number(
                 value=crit["wavelength"], min=300, max=1100, format="%.0f",
-                on_change=lambda e, c=crit: c.update(wavelength=int(e.value or 550)),
+                on_change=lambda e, i=i: ctx["dispatch"](
+                    "update_advanced_criterion",
+                    {"index": i, "field": "wavelength", "value": e.value},
+                ),
             ).props("outlined dense label='λ (nm)'").classes("w-28")
             ui.number(
                 value=crit["trans_min"], min=0, max=100, format="%.0f",
-                on_change=lambda e, c=crit: c.update(trans_min=int(e.value or 0)),
+                on_change=lambda e, i=i: ctx["dispatch"](
+                    "update_advanced_criterion",
+                    {"index": i, "field": "trans_min", "value": e.value},
+                ),
             ).props("outlined dense label='min %'").classes("w-20")
             ui.number(
                 value=crit["trans_max"], min=0, max=100, format="%.0f",
-                on_change=lambda e, c=crit: c.update(trans_max=int(e.value or 100)),
+                on_change=lambda e, i=i: ctx["dispatch"](
+                    "update_advanced_criterion",
+                    {"index": i, "field": "trans_max", "value": e.value},
+                ),
             ).props("outlined dense label='max %'").classes("w-20")
             if len(criteria) > 1:
                 ui.button(
                     icon="close",
-                    on_click=lambda idx=i: _remove_criterion(app_state, idx, ctx),
+                    on_click=lambda idx=i: ctx["dispatch"](
+                        "remove_advanced_criterion", {"index": idx}
+                    ),
                 ).props("flat dense round size=sm color=negative")
     ui.button(
         "Add criterion", icon="add",
-        on_click=lambda: _add_criterion(app_state, ctx),
+        on_click=lambda: ctx["dispatch"]("add_advanced_criterion", {}),
     ).props("flat dense")
 
     ui.select(
         ["Filter Number", "Filter Name", "Trans @ λ", "Hex-Rainbow"],
         value=app_state.advanced_search_sort,
         label="Sort",
-        on_change=lambda e: _set_sort(app_state, str(e.value)),
+        on_change=lambda e: ctx["dispatch"](
+            "set_advanced_sort", {"value": str(e.value)}
+        ),
     ).classes("w-full").props("outlined dense")
 
     ui.button(
@@ -105,26 +120,6 @@ def _render_advanced(ctx: Dict[str, Any]) -> None:
         on_click=lambda: ctx["refresh_panel"]("shelf_filters"),
     ).props("outlined dense")
 
-
-def _set_manufacturers(app_state, value) -> None:
-    app_state.advanced_search_manufacturers = [str(v) for v in (value or [])]
-
-
-def _set_sort(app_state, value: str) -> None:
-    app_state.advanced_search_sort = value
-
-
-def _add_criterion(app_state, ctx) -> None:
-    app_state.advanced_search_wavelength_criteria.append(
-        {"wavelength": 550, "trans_min": 0, "trans_max": 100}
-    )
-    ctx["refresh_panel"]("shelf_filters")
-
-
-def _remove_criterion(app_state, index: int, ctx) -> None:
-    if 0 <= index < len(app_state.advanced_search_wavelength_criteria):
-        app_state.advanced_search_wavelength_criteria.pop(index)
-    ctx["refresh_panel"]("shelf_filters")
 
 def _render_results(ctx: Dict[str, Any]) -> None:
     app_state = ctx["app_state"]

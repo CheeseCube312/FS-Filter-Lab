@@ -18,7 +18,9 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from models.constants import DEFAULT_WB_GAINS, MY_FILTERS_FILE
-from models.core import ChannelMixerSettings, Filter, SensorProfile
+from models.core import ChannelMixerSettings, SensorProfile
+
+from services.spectra import wb_gains as compute_wb_gains
 
 logger = logging.getLogger(__name__)
 
@@ -48,33 +50,22 @@ class AppState:
     active_profile: Optional[SensorProfile] = None
     illuminant: Optional[np.ndarray] = None
     illuminant_name: Optional[str] = None
-    # --- Target profile ---
-    target_profile: Optional[Filter] = None
-    selected_target_name: Optional[str] = None
     # --- Film emulation target ---
     film_emulation_profile: Optional[SensorProfile] = None
     film_emulation_profile_name: Optional[str] = None
     film_emulation_wb: bool = False
-    film_emulation_wb_gains: Dict[str, float] = field(
-        default_factory=lambda: dict(DEFAULT_WB_GAINS)
-    )
     film_emulation_filters: List[str] = field(default_factory=list)
     # --- Computed results ---
-    combined_transmission: Optional[np.ndarray] = None
     white_balance_gains: Dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_WB_GAINS)
     )
     wb_reference_surface: Optional[str] = None
     # --- Surfaces instrument: reflectors added as color-preview chips (§3.2.3) ---
     selected_surfaces: List[str] = field(default_factory=list)
-    last_export: Dict[str, Any] = field(default_factory=dict)
+    # --- Data shelf: last import outcome per importer card (§3.3) ---
+    last_import: Dict[str, Dict[str, str]] = field(default_factory=dict)
     # --- Display toggles ---
-    log_view: bool = False
     apply_white_balance: bool = False
-    show_advanced_search: bool = False
-    show_import_data: bool = False
-    show_reflector_search: bool = False
-    show_my_filters_manager: bool = False
     my_filters_only: bool = False
     # --- Advanced filter search (persists across UI rebuilds) ---
     advanced_search_manufacturers: List[str] = field(default_factory=list)
@@ -82,10 +73,6 @@ class AppState:
         default_factory=_default_wavelength_criteria
     )
     advanced_search_sort: str = "Filter Number"
-    # --- RGB channel visibility ---
-    show_R: bool = True
-    show_G: bool = True
-    show_B: bool = True
     # --- Channel mixer ---
     channel_mixer: ChannelMixerSettings = field(default_factory=ChannelMixerSettings)
     # --- Sidebar expansion open/closed state (persists across rebuilds) ---
@@ -113,30 +100,6 @@ class AppState:
         return self.active_profile.display_name if self.active_profile else None
 
     # ====================================================================
-    # COMPOSED-VIEW PROPERTIES
-    # ====================================================================
-
-    @property
-    def rgb_channels_visibility(self) -> Dict[str, bool]:
-        return {"R": self.show_R, "G": self.show_G, "B": self.show_B}
-
-    @rgb_channels_visibility.setter
-    def rgb_channels_visibility(self, value: Dict[str, bool]) -> None:
-        for ch in ("R", "G", "B"):
-            setattr(self, f"show_{ch}", value.get(ch, True))
-
-    @property
-    def show_channel_mixer(self) -> bool:
-        return self.channel_mixer.enabled
-
-    @show_channel_mixer.setter
-    def show_channel_mixer(self, value: bool) -> None:
-        mixer = self.channel_mixer
-        if mixer.enabled != value:
-            mixer.enabled = value
-            self.channel_mixer = mixer
-
-    # ====================================================================
     # WHITE BALANCE
     # ====================================================================
 
@@ -146,11 +109,10 @@ class AppState:
         transmission: np.ndarray,
         source_file: Optional[str] = None,
     ) -> None:
-        from services.calculations import compute_white_balance_gains_from_surface
-
         if self.current_qe and self.illuminant is not None:
-            new_gains = compute_white_balance_gains_from_surface(
-                reflector, transmission, self.current_qe, self.illuminant
+            new_gains = compute_wb_gains(
+                transmission, self.current_qe, self.illuminant,
+                reflector=reflector,
             )
             self.white_balance_gains = new_gains
             self.wb_reference_surface = source_file
@@ -170,38 +132,37 @@ class AppState:
         Otherwise computes standard WB from the filter transmission, QE, and
         illuminant.  Returns the (possibly updated) gains dict.
         """
-        from services.calculations import (
-            compute_white_balance_gains,
-            compute_white_balance_gains_from_surface,
-        )
-
         wb_gains = self.white_balance_gains
         if not self.current_qe or self.illuminant is None:
             return wb_gains
 
         wb_ref = self.wb_reference_surface
-        if wb_ref and reflector_collection:
+        if wb_ref:
             ref_reflector = None
-            for r in reflector_collection.reflectors:
-                if r.metadata.get("source_file", "") == wb_ref:
-                    ref_reflector = r
-                    break
+            if reflector_collection is not None:
+                for r in reflector_collection.reflectors:
+                    if r.metadata.get("source_file", "") == wb_ref:
+                        ref_reflector = r
+                        break
 
             if ref_reflector is not None:
-                wb_gains = compute_white_balance_gains_from_surface(
-                    ref_reflector.values, trans_interp,
-                    self.current_qe, self.illuminant,
+                wb_gains = compute_wb_gains(
+                    trans_interp, self.current_qe, self.illuminant,
+                    reflector=ref_reflector.values,
                 )
                 self.white_balance_gains = wb_gains
             else:
+                # Surface gone or no collection loaded: fall back to standard
+                # gains AND drop the dangling reference, so the UI chip and
+                # the stored gains can never disagree.
                 logger.warning("WB reference surface not found: %s", wb_ref)
-                wb_gains = compute_white_balance_gains(
+                self.wb_reference_surface = None
+                wb_gains = compute_wb_gains(
                     trans_interp, self.current_qe, self.illuminant,
                 )
                 self.white_balance_gains = wb_gains
-                self.wb_reference_surface = None
         else:
-            wb_gains = compute_white_balance_gains(
+            wb_gains = compute_wb_gains(
                 trans_interp, self.current_qe, self.illuminant,
             )
             self.white_balance_gains = wb_gains
@@ -224,17 +185,6 @@ class AppState:
         else:
             self.active_profile = None
 
-    def select_target(self, name: Optional[str], filter_collection: Any) -> None:
-        """Set the target profile from a named filter."""
-        if not name or name == "None":
-            self.target_profile = None
-            self.selected_target_name = None
-        else:
-            display_to_index = filter_collection.get_display_to_index_map()
-            idx = display_to_index[name]
-            self.target_profile = filter_collection.filters[idx]
-            self.selected_target_name = name
-
     def select_film_emulation_target(self, name: Optional[str], sensor_profiles: Dict[str, Any]) -> None:
         """Set the film emulation target from a named SensorProfile (film only)."""
         if not name or name == "None":
@@ -254,7 +204,8 @@ class AppState:
             try:
                 data = json.loads(fp.read_text(encoding="utf-8"))
                 return data.get("default_reflectors", [])
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as exc:
+                logger.warning("Could not read %s: %s", fp, exc)
                 return []
         return []
 
@@ -266,8 +217,8 @@ class AppState:
                 json.dumps({"default_reflectors": reflector_files}, indent=2),
                 encoding="utf-8",
             )
-        except IOError:
-            pass
+        except IOError as exc:
+            logger.warning("Could not save %s: %s", fp, exc)
 
     def get_default_reflector_files(self) -> List[str]:
         return self._default_reflector_files
@@ -278,11 +229,6 @@ class AppState:
     def add_to_default_reflectors(self, source_file: str) -> None:
         if source_file not in self._default_reflector_files:
             self._default_reflector_files.append(source_file)
-            self._save_default_reflectors_to_file(self._default_reflector_files)
-
-    def remove_from_default_reflectors(self, source_file: str) -> None:
-        if source_file in self._default_reflector_files:
-            self._default_reflector_files.remove(source_file)
             self._save_default_reflectors_to_file(self._default_reflector_files)
 
     def seed_isdefault_reflectors(self, reflector_collection: Any) -> None:
@@ -305,7 +251,8 @@ class AppState:
             try:
                 data = json.loads(fp.read_text(encoding="utf-8"))
                 return data.get("my_filters", [])
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as exc:
+                logger.warning("Could not read %s: %s", fp, exc)
                 return []
         return []
 
@@ -317,14 +264,11 @@ class AppState:
                 json.dumps({"my_filters": sorted(filter_names)}, indent=2),
                 encoding="utf-8",
             )
-        except IOError:
-            pass
+        except IOError as exc:
+            logger.warning("Could not save %s: %s", fp, exc)
 
     def get_my_filters(self) -> set:
         return self._my_filters_set
-
-    def get_my_filters_count(self) -> int:
-        return len(self._my_filters_set)
 
     def is_my_filter(self, display_name: str) -> bool:
         return display_name in self._my_filters_set

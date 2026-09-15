@@ -13,8 +13,7 @@ model is a multiplication chain:
 
 Capture media (digital sensor, slide film, colour-negative film, B&W film)
 are all the same thing here: a dict of per-channel sensitivity curves.
-Film differs only in display (negative inversion, B&W luminance collapse),
-which stays in the presentation layer — see ``invert_for_display()``.
+Film's display inversion stays in the presentation layer.
 
 This module is pure: numpy arithmetic only.  No I/O, no NiceGUI, no app
 state.  Both the calculation service and the chart layer consume it, so
@@ -45,15 +44,7 @@ RGB_CHANNELS = ('R', 'G', 'B')
 # ============================================================================
 
 def is_valid_spectrum(spectrum: Optional[np.ndarray]) -> bool:
-    """
-    Check whether a spectrum array is usable for computation.
-
-    Args:
-        spectrum: Spectrum values to check (any array-like)
-
-    Returns:
-        True if the spectrum is a non-empty array with finite entries
-    """
+    """True when a spectrum is a non-empty array with at least one finite entry."""
     try:
         return (spectrum is not None and
                 hasattr(spectrum, '__len__') and
@@ -68,28 +59,15 @@ def is_valid_spectrum(spectrum: Optional[np.ndarray]) -> bool:
 # THE MULTIPLICATION CHAIN
 # ============================================================================
 
-def combine_transmission(
-    transmission_values: Sequence[np.ndarray],
-    combine: bool = True
-) -> np.ndarray:
+def combine_transmission(transmission_values: Sequence[np.ndarray]) -> np.ndarray:
     """
-    Multiply a filter stack into one transmission spectrum.
-
-    All transmission values are expected to be in fractional scale (0-1).
-    Filter combination uses natural multiplication which preserves this scale.
-
-    Args:
-        transmission_values: Sequence of transmission arrays (each 0-1 scale)
-        combine: Whether to combine the transmissions (multiply them)
-
-    Returns:
-        Combined transmission in fractional scale (0-1);
-        the identity spectrum (ones) for an empty stack
+    Multiply a filter stack into one transmission spectrum, preserving the
+    fractional (0-1) scale; the identity spectrum (ones) for an empty stack.
     """
     if not transmission_values:
         return np.ones_like(INTERP_GRID)
 
-    if combine and len(transmission_values) > 1:
+    if len(transmission_values) > 1:
         stack = np.array(transmission_values)
         combined = np.nanprod(stack, axis=0)
         combined[np.any(np.isnan(stack), axis=0)] = np.nan
@@ -105,20 +83,9 @@ def sensor_channel_curves(
     display_scale: float = 1.0
 ) -> Dict[str, np.ndarray]:
     """
-    Per-wavelength product of the chain: transmission x sensitivity [x illuminant].
-
-    This is the response *curve* of each capture channel under the current
-    filter stack — what the response chart and the film-emulation overlay
-    plot.  A NaN in any operand makes that wavelength NaN in the curve.
-
-    Args:
-        transmission: Combined filter transmission (0-1 fractional scale)
-        sensitivities: Per-channel sensitivity/QE curves {'R': ..., 'G': ..., 'B': ...}
-        illuminant: Optional illuminant spectrum; omitted for raw capture response
-        display_scale: Constant factor applied last (e.g. 100 for percent display)
-
-    Returns:
-        Dict of response curves keyed like ``sensitivities``
+    Per-wavelength product of the chain: transmission x sensitivity
+    [x illuminant] [x display_scale], per channel.  A NaN in any operand
+    makes that wavelength NaN in the curve.
     """
     curves = {}
     for channel, sensitivity in sensitivities.items():
@@ -139,18 +106,7 @@ def integrated_response(
 ) -> float:
     """
     Scalar channel response: the chain summed over fully-valid wavelengths.
-
-    Wavelengths where any operand is NaN are excluded from the integral
-    (not zero-filled).  Returns NaN when no wavelength is valid.
-
-    Args:
-        transmission: Combined filter transmission (0-1 fractional scale)
-        sensitivity: Single-channel sensitivity/QE curve
-        illuminant: Illuminant spectrum
-        reflector: Optional surface reflectance in the optical path
-
-    Returns:
-        Integrated response as a float, or NaN if there is no valid data
+    NaN wavelengths are excluded (not zero-filled); NaN when none are valid.
     """
     terms = [
         np.asarray(transmission, dtype=float),
@@ -177,7 +133,7 @@ def integrated_response(
 # WHITE BALANCE
 # ============================================================================
 
-def normalize_wb_gains(channel_responses: Dict[str, float]) -> Dict[str, float]:
+def _normalize_wb_gains(channel_responses: Dict[str, float]) -> Dict[str, float]:
     """
     Normalize integrated channel responses into white-balance gains.
 
@@ -245,31 +201,5 @@ def wb_gains(
             transmission, sensitivity, illuminant, reflector
         )
 
-    return normalize_wb_gains(channel_responses)
-
-
-# ============================================================================
-# FILM DISPLAY TRANSFORMS
-# ============================================================================
-
-def invert_for_display(responses: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    """
-    Colour-negative film: flip the latent image for display.
-
-    The latent image of a negative stores dye densities, so the visualisation
-    applies a peak-relative inversion (peak - response) to render a positive.
-    Peak-relative rather than absolute so it works at any display scale.
-
-    Args:
-        responses: Per-channel response curves {'R','G','B'}
-
-    Returns:
-        Inverted response curves keyed like the input
-    """
-    max_val = max(
-        (np.nanmax(curve) for curve in responses.values() if len(curve) > 0),
-        default=1.0
-    )
-    max_val = max_val if max_val > 0 else 1.0
-    return {channel: max_val - curve for channel, curve in responses.items()}
+    return _normalize_wb_gains(channel_responses)
 

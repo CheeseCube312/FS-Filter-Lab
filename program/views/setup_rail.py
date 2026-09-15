@@ -3,8 +3,6 @@ from typing import Any, Dict
 
 from nicegui import ui
 
-from services.presenter import prepare_filter_rows
-
 
 def render_setup_rail(ctx: Dict[str, Any]) -> None:
     app_state = ctx["app_state"]
@@ -40,12 +38,6 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
         on_change=lambda e: ctx["dispatch"]("select_illuminant", {"name": e.value}),
     ).classes("w-full").props("outlined dense")
 
-    ui.switch(
-        "Owned filters only",
-        value=app_state.my_filters_only,
-        on_change=lambda e: ctx["dispatch"]("set_owned_only", {"value": e.value}),
-    )
-
     # --- Stack editor ---
     ui.label("Filter stack").classes("text-subtitle1 q-mt-md")
     if not app_state.selected_filters:
@@ -58,15 +50,6 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
             icon="delete_sweep",
             on_click=lambda: ctx["dispatch"]("clear_stack"),
         ).props("flat dense color=negative")
-
-    # --- Quick add ---
-    ui.label("Quick add").classes("text-subtitle1 q-mt-md")
-    search = ui.input(placeholder="Search by name or number…").classes("w-full").props("dense outlined")
-    search.props('debounce="300"')
-    results = ui.column().classes("w-full gap-1")
-    search.on_value_change(
-        lambda e: _render_quick_results(ctx, results, str(e.value or ""))
-    )
 
 
 def _render_stack_row(ctx: Dict[str, Any], name: str) -> None:
@@ -83,27 +66,3 @@ def _render_stack_row(ctx: Dict[str, Any], name: str) -> None:
             on_click=lambda n=name: ctx["dispatch"]("remove_filter", {"name": n}),
         ).props("flat dense round size=sm color=negative")
 
-
-def _render_quick_results(ctx: Dict[str, Any], container: ui.column, query: str) -> None:
-    app_state = ctx["app_state"]
-    data = ctx["data"]
-    container.clear()
-    if not query.strip():
-        return
-    rows = prepare_filter_rows(app_state, data, query=query, limit=8)
-    with container:
-        if not rows:
-            ui.label("No matches.").classes("text-body2 text-grey-6")
-        for row in rows:
-            with ui.row().classes("w-full items-center no-wrap q-py-xs"):
-                ui.element("div").style(
-                    f"background: {row.hex_color}; width: 14px; height: 14px; "
-                    "border: 1px solid #999; flex: none;"
-                )
-                ui.label(row.display_name).classes("text-body2 col ellipsis")
-                if row.is_owned:
-                    ui.icon("star", color="amber-6").classes("text-caption")
-                ui.button(
-                    icon="add",
-                    on_click=lambda r=row: ctx["dispatch"]("add_filter", {"name": r.display_name}),
-                ).props("flat dense round size=sm").tooltip("Add to stack")

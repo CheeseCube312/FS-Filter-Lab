@@ -32,7 +32,7 @@ def render_film_match(ctx: Dict[str, Any]) -> None:
         on_change=lambda e: ctx["dispatch"]("set_film_wb", {"value": e.value}),
     )
 
-    display_names = data.filter_collection.get_display_names()
+    display_names = [str(f) for f in data.filter_collection.filters]
     ui.select(
         display_names, multiple=True,
         value=list(app_state.film_emulation_filters),
@@ -70,8 +70,15 @@ def render_film_match(ctx: Dict[str, Any]) -> None:
 
 
 def _render_mixer(ctx: Dict[str, Any]) -> None:
+    page_state = ctx["page_state"]
     mixer = ctx["app_state"].channel_mixer
-    with ui.expansion("Channel mixer", icon="tune", value=mixer.enabled).classes("w-full"):
+    # Expansion open-state lives in page_state (like the Filters shelf's
+    # adv_open/mf_open): re-renders must not snap a user-opened panel shut
+    # just because the mixer is currently disabled.
+    with ui.expansion(
+        "Channel mixer", icon="tune",
+        value=page_state.setdefault("mixer_open", mixer.enabled),
+    ).classes("w-full") as mixer_panel:
         ui.switch(
             "Enable channel mixing",
             value=mixer.enabled,
@@ -94,3 +101,6 @@ def _render_mixer(ctx: Dict[str, Any]) -> None:
             "Reset mixer", icon="restart_alt",
             on_click=lambda: ctx["dispatch"]("reset_mixer"),
         ).props("flat dense")
+    mixer_panel.on_value_change(
+        lambda e: page_state.__setitem__("mixer_open", e.value)
+    )

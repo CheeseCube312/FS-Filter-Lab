@@ -11,7 +11,7 @@ never on any UI toolkit.
 import colorsys
 import io
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
 import numpy as np
@@ -19,21 +19,19 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # Local imports
-from models.constants import CHART_COLORS, INTERP_GRID, SENSOR_TYPE_LABELS, UI_INFO_MESSAGES
+from models.constants import CHART_COLORS, INTERP_GRID, SENSOR_TYPE_LABELS
 from models.core import AppData, FilterCollection
 from services.calculations import (
     compute_filter_transmission,
     compute_selected_filter_indices,
     compute_effective_stops,
-    compute_rgb_response,
     compute_active_transmission,
-    format_transmission_metrics,
-    format_white_balance_data,
+    effective_transmission,
     compute_reflector_color,
-    compute_white_balance_gains,
     compute_white_reference_color,
     reference_color_to_display,
-    srgb_encode,
+    filter_display_color,
+    srgb_to_hex,
 )
 from services.visualization import (
     create_filter_response_plot,
@@ -41,8 +39,10 @@ from services.visualization import (
     create_sensor_response_plot,
     prepare_rgb_for_display,
 )
-from services.spectra import sensor_channel_curves
+from services.spectra import sensor_channel_curves, wb_gains as compute_wb_gains
 from services.state_manager import AppState
+
+QE_ILLUMINANT_REQUIRED_MSG = "Select a QE & illuminant profile to compute white balance."
 
 
 # =============================================================================
@@ -63,18 +63,12 @@ class TransmissionMetricsVM:
 class WhiteBalanceVM:
     """View model for white balance display."""
     gains: Dict[str, float]
-    intensities: Dict[str, str]  # Pre-formatted strings
-    has_filters: bool
     mode_note: str  # e.g. " (from surface reference)" or ""
 
 
 @dataclass
 class FilterAnalysisVM:
     """View model containing everything the filter analysis view needs to render."""
-    transmission: np.ndarray
-    label: str
-    combined: Optional[np.ndarray]
-    effective_transmission: np.ndarray
     metrics: Optional[TransmissionMetricsVM]
     filter_response_fig: go.Figure
 
@@ -84,7 +78,6 @@ class SensorAnalysisVM:
     """View model containing everything the sensor analysis view needs to render."""
     sensor_response_fig: go.Figure
     wb_display: Optional[WhiteBalanceVM]
-    has_qe_and_illuminant: bool
     info_message: Optional[str] = None  # Shown when QE+illuminant not available
 
 
@@ -95,77 +88,49 @@ class SensorAnalysisVM:
 def prepare_filter_analysis(
     app_state: AppState,
     filter_collection: FilterCollection,
-    selected_indices: Optional[List[int]] = None,
     log_stops: Optional[bool] = None,
 ) -> FilterAnalysisVM:
-    """
-    Prepare all data needed to render the filter analysis section.
-    
-    Computes transmission, updates state, calculates metrics,
-    and creates the Plotly chart — returning everything as a view model.
-    
-    Args:
-        app_state: Application state manager
-        filter_collection: The loaded filter collection
-        selected_indices: Indices of selected filters in the collection
-        
-    Returns:
-        FilterAnalysisVM with all data needed for display
-    """
-    if selected_indices is None:
-        selected_indices = compute_selected_filter_indices(
-            app_state.selected_filters,
-            app_state.filter_multipliers,
-            filter_collection,
-        )
+    """Prepare all data needed to render the filter analysis section."""
+    selected_indices = compute_selected_filter_indices(
+        app_state.selected_filters,
+        app_state.filter_multipliers,
+        filter_collection,
+    )
 
     # Calculate transmission
-    trans, label, combined = compute_filter_transmission(
+    trans, label = compute_filter_transmission(
         selected_indices,
         filter_collection.filter_matrix
     )
-    effective_trans = combined if combined is not None else trans
-    
-    # Update state
-    app_state.combined_transmission = effective_trans
-    
-    # Trigger RGB response computation (needed for downstream effects)
-    if app_state.current_qe:
-        compute_rgb_response(
-            trans,
-            app_state.current_qe,
-            app_state.white_balance_gains,
-            app_state.rgb_channels_visibility,
-            app_state.channel_mixer
-        )
-    
+    combined = trans if label == "Combined" else None
+
     # Calculate transmission metrics
     metrics = _prepare_transmission_metrics(trans, label, app_state)
-    
+
     # Create filter response chart
     filter_names = [f.name for f in filter_collection.filters]
-    filter_hex_colors = [f.hex_color for f in filter_collection.filters]
-    
+    # Curve strokes trust metadata, but derive from the spectrum when a file
+    # ships no (valid) color — same rule as the shelf swatches (identity hues
+    # only for curves actually drawn, so cost stays negligible).
+    selected = set(int(i) for i in (selected_indices or []))
+    filter_hex_colors = [
+        filter_display_color(filter_collection.filter_matrix[i], f.hex_color)
+        if i in selected else f.hex_color
+        for i, f in enumerate(filter_collection.filters)
+    ]
+
     fig = create_filter_response_plot(
         interp_grid=INTERP_GRID,
         filter_matrix=filter_collection.filter_matrix,
         masks=filter_collection.extrapolated_masks,
         selected_indices=selected_indices,
         combined=combined,
-        target_profile=app_state.target_profile,
-        log_stops=log_stops if log_stops is not None else app_state.log_view,
+        log_stops=bool(log_stops),
         filter_names=filter_names,
         filter_hex_colors=filter_hex_colors
     )
-    
-    return FilterAnalysisVM(
-        transmission=trans,
-        label=label,
-        combined=combined,
-        effective_transmission=effective_trans,
-        metrics=metrics,
-        filter_response_fig=fig
-    )
+
+    return FilterAnalysisVM(metrics=metrics, filter_response_fig=fig)
 
 
 def _prepare_transmission_metrics(
@@ -195,7 +160,7 @@ def _prepare_transmission_metrics(
         )
     
     avg_trans, effective_stops = compute_effective_stops(trans, raw_qe, app_state.illuminant)
-    metrics = format_transmission_metrics(trans, label, avg_trans, effective_stops)
+    metrics = _format_transmission_metrics(label, avg_trans, effective_stops)
     
     return TransmissionMetricsVM(
         label=metrics['label'],
@@ -221,13 +186,6 @@ def _compute_film_emulation_target(
     the main stack) and the current illuminant, in percent display scale,
     optionally white-balanced against the film target itself.  The physics of
     the response chain lives in :func:`services.spectra.sensor_channel_curves`.
-
-    Args:
-        app_state: Application state manager
-        filter_collection: Collection of available filters
-
-    Returns:
-        Tuple of (response curves per channel or None, display label, is B&W)
     """
     film_profile = app_state.film_emulation_profile
     if film_profile is None or app_state.illuminant is None:
@@ -243,7 +201,7 @@ def _compute_film_emulation_target(
             emul_filter_names, {}, filter_collection
         )
         film_filter = compute_active_transmission(
-            emul_filter_names, emul_indices, filter_collection.filter_matrix
+            emul_indices, filter_collection.filter_matrix
         )
     else:
         film_filter = np.ones_like(illuminant)
@@ -253,10 +211,10 @@ def _compute_film_emulation_target(
         film_filter, film_channels_raw, illuminant, display_scale=100
     )
 
-    # Optionally apply independent WB to the target
+    # Optionally apply independent WB to the target. Gains stay local: render
+    # paths never write back into AppState.
     if app_state.film_emulation_wb:
-        em_gains = compute_white_balance_gains(film_filter, film_channels_raw, illuminant)
-        app_state.film_emulation_wb_gains = em_gains
+        em_gains = compute_wb_gains(film_filter, film_channels_raw, illuminant)
         for channel in film_resp:
             gain = em_gains.get(channel, 1.0)
             film_resp[channel] = (
@@ -266,45 +224,64 @@ def _compute_film_emulation_target(
     return film_resp, film_profile.display_name, film_profile.sensor_type == 'bw'
 
 
+def _format_transmission_metrics(
+    label: str,
+    avg_trans: float,
+    effective_stops: float
+) -> Dict[str, str]:
+    """Display strings for the stack metrics card (moved from calculations)."""
+    return {
+        "label": label,
+        "effective_stops": f"{effective_stops:.2f}",
+        "avg_transmission_pct": f"{avg_trans * 100:.1f}%"
+    }
+
+
+def _format_white_balance_data(
+    white_balance_gains: Dict[str, float],
+    selected_filters: List[str]
+) -> Dict[str, Any]:
+    """Display payload for the white balance card (moved from calculations)."""
+    # Calculate relative channel intensities (inverted gains)
+    intensities = {
+        k: (1.0 / v if v != 0 else 0.0)
+        for k, v in white_balance_gains.items()
+    }
+
+    # Add a note if no filters are selected
+    has_filters = len(selected_filters) > 0
+
+    return {
+        "has_filters": has_filters,
+        "intensities": {
+            "R": f"{intensities['R']:.3f}",
+            "G": f"{intensities['G']:.3f}",
+            "B": f"{intensities['B']:.3f}"
+        }
+    }
+
+
 def prepare_sensor_analysis(
     app_state: AppState,
     data: AppData,
-    selected_indices: Optional[List[int]] = None,
     visible_channels: Optional[Dict[str, bool]] = None,
 ) -> SensorAnalysisVM:
-    """
-    Prepare all data needed to render the sensor analysis section.
-    
-    Computes active transmission, white balance, creates sensor response 
-    chart, and formats WB display data — returning everything as a view model.
-    
-    Args:
-        app_state: Application state manager
-        data: Typed application data container (AppData)
-        selected_indices: Indices of selected filters
-        
-    Returns:
-        SensorAnalysisVM with all data needed for display
-    """
-    if selected_indices is None:
-        selected_indices = compute_selected_filter_indices(
-            app_state.selected_filters,
-            app_state.filter_multipliers,
-            data.filter_collection,
-        )
-
+    """Prepare the sensor response chart and white-balance display."""
     filter_collection = data.filter_collection
-    reflector_collection = data.reflector_collection
-    
+    selected_indices = compute_selected_filter_indices(
+        app_state.selected_filters,
+        app_state.filter_multipliers,
+        filter_collection,
+    )
+
     # Compute active transmission
     trans_interp = compute_active_transmission(
-        app_state.selected_filters,
         selected_indices,
         filter_collection.filter_matrix
     )
-    
-    # Compute and update white balance
-    wb_gains = app_state.recompute_white_balance(trans_interp, reflector_collection)
+
+    # WB gains are maintained by the action layer (§5); presenters only read.
+    wb_gains = app_state.white_balance_gains
 
     # Compute film emulation target channels
     film_emulation_channels, film_emulation_label, film_emulation_is_bw = (
@@ -316,50 +293,38 @@ def prepare_sensor_analysis(
         interp_grid=INTERP_GRID,
         transmission=trans_interp,
         qe_data=app_state.current_qe,
-        visible_channels=(
-            visible_channels if visible_channels is not None
-            else app_state.rgb_channels_visibility
-        ),
+        visible_channels=visible_channels
+        or {"R": True, "G": True, "B": True},
         white_balance_gains=wb_gains,
         apply_white_balance=app_state.apply_white_balance,
-        target_profile=app_state.target_profile,
         channel_mixer=app_state.channel_mixer,
         sensor_profile=app_state.active_profile,
         film_emulation_channels=film_emulation_channels,
         film_emulation_label=film_emulation_label,
         film_emulation_is_bw=film_emulation_is_bw,
     )
-    
+
     # Prepare white balance display
-    has_qe_and_illuminant = (app_state.current_qe is not None 
-                             and app_state.illuminant is not None)
-    
     wb_display = None
     info_message = None
-    
-    if has_qe_and_illuminant:
-        wb_data = format_white_balance_data(wb_gains, app_state.selected_filters)
-        
+
+    if app_state.current_qe is not None and app_state.illuminant is not None:
+        wb_data = _format_white_balance_data(wb_gains, app_state.selected_filters)
+
         if app_state.wb_reference_surface:
             mode_note = " (from surface reference)"
         elif not wb_data["has_filters"]:
             mode_note = " (No filter selected)"
         else:
             mode_note = ""
-        
-        wb_display = WhiteBalanceVM(
-            gains=wb_gains,
-            intensities=wb_data['intensities'],
-            has_filters=wb_data['has_filters'],
-            mode_note=mode_note
-        )
+
+        wb_display = WhiteBalanceVM(gains=wb_gains, mode_note=mode_note)
     else:
-        info_message = UI_INFO_MESSAGES['qe_illuminant_required']
-    
+        info_message = QE_ILLUMINANT_REQUIRED_MSG
+
     return SensorAnalysisVM(
         sensor_response_fig=fig_response,
         wb_display=wb_display,
-        has_qe_and_illuminant=has_qe_and_illuminant,
         info_message=info_message
     )
 
@@ -375,15 +340,14 @@ def _filter_by_manufacturer(df: pd.DataFrame, manufacturers: List[str]) -> pd.Da
 def _filter_by_trans_at_wavelength(
     df: pd.DataFrame, interp_grid: np.ndarray, matrix: np.ndarray,
     wavelength: int, min_t: float = 0.0, max_t: float = 1.0,
-) -> Tuple[pd.DataFrame, np.ndarray]:
+) -> pd.DataFrame:
     idx = np.where(interp_grid == wavelength)[0]
     if idx.size == 0:
-        return df, np.zeros(len(df))
+        return df
     si = idx[0]
     di = df.index.to_numpy()
     tv = matrix[di, si]
-    mask = (tv >= min_t) & (tv <= max_t)
-    return df.iloc[mask], tv[mask]
+    return df.iloc[(tv >= min_t) & (tv <= max_t)]
 
 
 def _filter_by_multiple_wavelength_criteria(
@@ -396,7 +360,7 @@ def _filter_by_multiple_wavelength_criteria(
     filtered_df = df
     for criterion in criteria:
         # UI percentages -> 0-1 fractions
-        filtered_df, _ = _filter_by_trans_at_wavelength(
+        filtered_df = _filter_by_trans_at_wavelength(
             filtered_df, interp_grid, matrix,
             criterion["wavelength"],
             criterion["trans_min"] / 100.0,
@@ -446,7 +410,6 @@ def search_filters(
     df: pd.DataFrame,
     filter_matrix: np.ndarray,
     app_state: AppState,
-    interp_grid: np.ndarray = INTERP_GRID,
 ) -> pd.DataFrame:
     """
     Run the advanced filter search owned by app state: owned-only toggle,
@@ -459,11 +422,11 @@ def search_filters(
         filtered = _owned_only(filtered, app_state.get_my_filters())
     filtered = _filter_by_manufacturer(filtered, app_state.advanced_search_manufacturers)
     filtered = _filter_by_multiple_wavelength_criteria(
-        filtered, interp_grid, filter_matrix, app_state.advanced_search_wavelength_criteria
+        filtered, INTERP_GRID, filter_matrix, app_state.advanced_search_wavelength_criteria
     )
     return _sort_filters(
         filtered, app_state.advanced_search_sort,
-        app_state.advanced_search_wavelength_criteria, interp_grid, filter_matrix,
+        app_state.advanced_search_wavelength_criteria, INTERP_GRID, filter_matrix,
     )
 
 
@@ -516,14 +479,24 @@ def _create_filter_sparkline(transmission_row: np.ndarray, hex_color: str) -> go
 
 
 def _quick_search_df(df: pd.DataFrame, query: str) -> pd.DataFrame:
-    """Case-insensitive substring match on filter name / number."""
-    if not query:
+    """Tokenized case-insensitive AND-match on name / number / manufacturer.
+
+    Every whitespace-separated token must appear in at least one of the three
+    fields, so "lee oklahoma" finds Lee Filters' "Oklahoma Yellow" (brand
+    token + name token in one query). Tokens are matched literally, never as
+    regex, so queries with metacharacters like "(" are safe.
+    """
+    tokens = str(query).lower().split()
+    if not tokens:
         return df
-    q = query.strip().lower()
-    mask = (
-        df["Filter Name"].astype(str).str.lower().str.contains(q, na=False)
-        | df["Filter Number"].astype(str).str.lower().str.contains(q, na=False)
-    )
+    haystack = (
+        df["Filter Name"].astype(str) + "\x1f"
+        + df["Filter Number"].astype(str) + "\x1f"
+        + df["Manufacturer"].astype(str)
+    ).str.lower()
+    mask = pd.Series(True, index=df.index)
+    for token in tokens:
+        mask &= haystack.str.contains(token, regex=False, na=False)
     return df[mask]
 
 
@@ -553,15 +526,16 @@ def prepare_filter_rows(
         display = f"{r['Filter Name']} ({r['Filter Number']}, {r['Manufacturer']})"
         idx = display_to_index.get(display)
         trans_row = collection.filter_matrix[idx] if idx is not None else None
+        color = filter_display_color(trans_row, str(r["Hex Color"]))
         rows.append(FilterRowVM(
             display_name=display,
             manufacturer=str(r["Manufacturer"]),
-            hex_color=str(r["Hex Color"]),
+            hex_color=color,
             is_owned=display in owned,
             in_stack=display in app_state.selected_filters,
             multiplier=app_state.filter_multipliers.get(display, 1),
             sparkline=(
-                _create_filter_sparkline(trans_row, str(r["Hex Color"]))
+                _create_filter_sparkline(trans_row, color)
                 if trans_row is not None else go.Figure()
             ),
         ))
@@ -575,7 +549,7 @@ def prepare_filter_rows(
 @dataclass
 class ReferenceVM:
     """Read-only reference curves for the Reference tab (UX_SPEC.md §3.2.3)."""
-    sections: List[Tuple[str, Optional[go.Figure]]]
+    sections: List[Tuple[str, go.Figure]]
     note: Optional[str] = None
 
 
@@ -608,7 +582,7 @@ def _create_channel_curves_figure(
 
 def prepare_reference(app_state: AppState, data: AppData) -> ReferenceVM:
     """Raw sensitivity / illuminant / film-target curves — demoted lookup view."""
-    sections: List[Tuple[str, Optional[go.Figure]]] = []
+    sections: List[Tuple[str, go.Figure]] = []
     note: Optional[str] = None
     profile = app_state.active_profile
 
@@ -659,7 +633,6 @@ class SurfaceChipVM:
     hex_display: str
     linear_rgb: Tuple[float, float, float]
     is_wb_ref: bool
-    note: str
 
 
 @dataclass
@@ -670,16 +643,8 @@ class SurfacesVM:
     wb_source_name: Optional[str] = None
 
 
-def _rgb_to_hex_srgb(linear_rgb: np.ndarray) -> str:
-    """Linear white-referenced RGB -> sRGB-encoded hex for CSS display."""
-    encoded = srgb_encode(linear_rgb)
-    return "#{:02x}{:02x}{:02x}".format(
-        *(int(round(float(c) * 255)) for c in encoded)
-    )
-
-
 def _surface_color_chain(
-    app_state: AppState, data: AppData, reflectance: np.ndarray,
+    app_state: AppState, reflectance: np.ndarray,
     transmission: np.ndarray, white_ref: np.ndarray,
 ) -> Tuple[np.ndarray, str]:
     """Full §7.1 chain for one surface; returns (linear_rgb, hex)."""
@@ -689,7 +654,7 @@ def _surface_color_chain(
         white_balance_gains=app_state.white_balance_gains,
     )
     linear = reference_color_to_display(surf, white_ref)
-    return linear, _rgb_to_hex_srgb(linear)
+    return linear, srgb_to_hex(linear)
 
 
 def prepare_surfaces(app_state: AppState, data: AppData) -> SurfacesVM:
@@ -698,18 +663,13 @@ def prepare_surfaces(app_state: AppState, data: AppData) -> SurfacesVM:
     if not qe or app_state.illuminant is None:
         return SurfacesVM(
             chips=[],
-            warning=UI_INFO_MESSAGES.get(
-                "qe_illuminant_required", "Select a sensor and an illuminant first."
-            ),
+            warning=QE_ILLUMINANT_REQUIRED_MSG,
         )
 
-    transmission = (
-        app_state.combined_transmission
-        if app_state.combined_transmission is not None
-        else np.ones_like(INTERP_GRID, dtype=float)
+    transmission = effective_transmission(
+        app_state.selected_filters, app_state.filter_multipliers,
+        data.filter_collection,
     )
-    # Keep gains fresh for this panel even if the response panel hasn't run.
-    app_state.recompute_white_balance(transmission, data.reflector_collection)
     white_ref = compute_white_reference_color(
         transmission, qe, app_state.illuminant,
         white_balance_gains=app_state.white_balance_gains,
@@ -727,7 +687,7 @@ def prepare_surfaces(app_state: AppState, data: AppData) -> SurfacesVM:
         if spectrum is None:
             continue
         linear, hex_display = _surface_color_chain(
-            app_state, data, spectrum.values, transmission, white_ref
+            app_state, spectrum.values, transmission, white_ref
         )
         chips.append(SurfaceChipVM(
             name=spectrum.name,
@@ -735,7 +695,6 @@ def prepare_surfaces(app_state: AppState, data: AppData) -> SurfacesVM:
             hex_display=hex_display,
             linear_rgb=(float(linear[0]), float(linear[1]), float(linear[2])),
             is_wb_ref=(app_state.wb_reference_surface == src),
-            note=str(spectrum.metadata.get("Target Type", "")),
         ))
         if app_state.wb_reference_surface == src:
             wb_source_name = spectrum.name
@@ -764,8 +723,6 @@ class ReflectorRowVM:
 class ReflectorsShelfVM:
     rows: List[ReflectorRowVM]
     total_matches: int
-    organizations: List[str]
-    target_types: List[str]
 
 
 def _coverage_note(values: np.ndarray) -> str:
@@ -792,14 +749,12 @@ def prepare_reflectors_shelf(
 
     qe = app_state.current_qe
     has_chain = bool(qe) and app_state.illuminant is not None
-    transmission = (
-        app_state.combined_transmission
-        if app_state.combined_transmission is not None
-        else np.ones_like(INTERP_GRID, dtype=float)
+    transmission = effective_transmission(
+        app_state.selected_filters, app_state.filter_multipliers,
+        data.filter_collection,
     )
     white_ref = None
     if has_chain:
-        app_state.recompute_white_balance(transmission, collection)
         white_ref = compute_white_reference_color(
             transmission, qe, app_state.illuminant,
             white_balance_gains=app_state.white_balance_gains,
@@ -821,7 +776,7 @@ def prepare_reflectors_shelf(
         preview_hex = "#777777"
         if has_chain:
             _, preview_hex = _surface_color_chain(
-                app_state, data, values, transmission, white_ref
+                app_state, values, transmission, white_ref
             )
         rows.append(ReflectorRowVM(
             name=name,
@@ -835,18 +790,7 @@ def prepare_reflectors_shelf(
             preview_hex=preview_hex,
         ))
 
-    orgs_all = (
-        sorted(set(collection.df["Organization"].astype(str)))
-        if "Organization" in collection.df.columns else []
-    )
-    targets_all = (
-        sorted(set(collection.df["Target Type"].astype(str)))
-        if "Target Type" in collection.df.columns else []
-    )
-    return ReflectorsShelfVM(
-        rows=rows, total_matches=len(result_df),
-        organizations=orgs_all, target_types=targets_all,
-    )
+    return ReflectorsShelfVM(rows=rows, total_matches=len(result_df))
 
 
 # =============================================================================
@@ -898,7 +842,6 @@ class ChannelDeviationVM:
 @dataclass
 class FilmMatchVM:
     """Everything the Film Match instrument renders (§7.2)."""
-    target_name: Optional[str]
     overlay_fig: Optional[go.Figure]
     deviations: List[ChannelDeviationVM]
     note: Optional[str] = None
@@ -978,23 +921,22 @@ def prepare_film_match(app_state: AppState, data: AppData) -> FilmMatchVM:
     film = app_state.film_emulation_profile
     if film is None:
         return FilmMatchVM(
-            target_name=None, overlay_fig=None, deviations=[],
+            overlay_fig=None, deviations=[],
             note="Pick a film target above, then shape the achieved response "
                  "with the filter stack and the channel mixer.",
         )
     if not app_state.current_qe or app_state.illuminant is None:
         return FilmMatchVM(
-            target_name=film.display_name, overlay_fig=None, deviations=[],
+            overlay_fig=None, deviations=[],
             note="A sensor and an illuminant are required to compute the match.",
         )
 
     target_channels, target_label, target_is_bw = _compute_film_emulation_target(
         app_state, data.filter_collection
     )
-    transmission = (
-        app_state.combined_transmission
-        if app_state.combined_transmission is not None
-        else np.ones_like(INTERP_GRID, dtype=float)
+    transmission = effective_transmission(
+        app_state.selected_filters, app_state.filter_multipliers,
+        data.filter_collection,
     )
     achieved = sensor_channel_curves(
         transmission, app_state.current_qe, app_state.illuminant, display_scale=100.0
@@ -1020,7 +962,5 @@ def prepare_film_match(app_state: AppState, data: AppData) -> FilmMatchVM:
             achieved, target_channels, target_label, target_is_bw
         )
 
-    return FilmMatchVM(
-        target_name=film.display_name, overlay_fig=overlay, deviations=deviations,
-    )
+    return FilmMatchVM(overlay_fig=overlay, deviations=deviations)
 

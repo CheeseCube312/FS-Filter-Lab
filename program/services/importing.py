@@ -29,25 +29,23 @@ Import adapters (one per on-disk format):
   (reflectors/plant|other; value column is always 'Reflectance' - the
   loader contract in services/data.py)
 - import_ecosis_csv: wide ECOSIS CSV -> one comment-header TSV per sample
-  (reflectors/Ecosis/...)
+  (reflectors/Ecosis/...); sample values are normalized to the 0-100 file
+  scale (the loaders divide by 100 on load)
 
 All import_* functions except import_ecosis_csv return
 (success: bool, message: str) tuples for consistent error handling in the
 UI layer; import_ecosis_csv returns the list of created files and raises
-ValueError on failure (forms.py wraps the call in try/except).
+ValueError on failure (views/actions.py wraps the call in try/except).
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Tuple, Dict, Any, List, Optional
-import json
+from typing import Tuple, Dict, List, Optional
 import functools
 import logging
 import re
-import urllib.error
-import urllib.request
-from models.constants import INTERP_GRID, DATA_FOLDERS, OUTPUT_FOLDERS, TSV_ATTRIBUTION_FIELDS, FILM_TSV_FIELDS
+from models.constants import INTERP_GRID, DATA_FOLDERS, OUTPUT_FOLDERS, FILM_TSV_FIELDS
 
 # Configure logging for debugging import issues
 logger = logging.getLogger(__name__)
@@ -274,196 +272,22 @@ def _interp_with_extrapolation(wavelengths, values, target_wavelengths):
 
 
 def _sanitize_filename(name):
-    """Convert a string to a valid filename."""
+    """Convert a string to a valid import filename (spaces -> underscores).
+
+    Deliberately different from reporting.sanitize_filename_component
+    (report paths; invalid chars -> '-'): unifying the two would change the
+    on-disk names future imports produce and orphan existing files.
+    """
     return ''.join(c for c in name if c.isalnum() or c in (' ', '_')).rstrip().replace(' ', '_')
 
 
-def _get_api_field(data: Dict, key: str, join_list: bool = True) -> str:
-    """Extract a field from API metadata, handling list/string variations."""
-    value = data.get(key, [])
-    if isinstance(value, list):
-        return ', '.join(value) if join_list else (value[0] if value else '')
-    return str(value) if value else ''
-
-
-def _fetch_ecosis_api_metadata(api_url: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
-    """
-    Fetch metadata from ECOSIS API endpoint.
-    
-    Args:
-        api_url: ECOSIS API URL (e.g., https://ecosis.org/api/package/package-name)
-        
-    Returns:
-        Tuple of (success, metadata_dict, error_message)
-    """
-    try:
-        logger.info("Fetching ECOSIS API metadata from: %s", api_url)
-        with urllib.request.urlopen(api_url, timeout=30) as response:
-            payload = response.read()
-        
-        metadata = json.loads(payload.decode('utf-8'))
-        
-        # Validate that this looks like ECOSIS API data
-        if not isinstance(metadata, dict):
-            return False, None, "API response is not a valid JSON object"
-            
-        # Check for expected ECOSIS API structure
-        if 'ecosis' not in metadata:
-            return False, None, "API response does not contain ECOSIS metadata structure"
-            
-        logger.info("Successfully fetched ECOSIS API metadata")
-        return True, metadata, ""
-        
-    except TimeoutError:
-        return False, None, "Request timeout - API server took too long to respond"
-    except urllib.error.HTTPError as e:
-        return False, None, f"HTTP error {e.code}: {e.reason}"
-    except urllib.error.URLError as e:
-        # socket.timeout is an OSError, so connect/read timeouts can surface
-        # wrapped inside URLError - keep them on the timeout branch.
-        if isinstance(e.reason, TimeoutError) or 'timed out' in str(e.reason).lower():
-            return False, None, "Request timeout - API server took too long to respond"
-        return False, None, "Connection error - check internet connection and API URL"
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return False, None, "Invalid JSON response from API"
-    except Exception as e:
-        logger.error("Unexpected error fetching ECOSIS metadata: %s", e)
-        return False, None, f"Unexpected error: {str(e)}"
-
-
-def _extract_attribution_info(api_metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract key attribution and metadata information from ECOSIS API response.
-    
-    Args:
-        api_metadata: Full API metadata dictionary
-        
-    Returns:
-        Dictionary with cleaned attribution information
-    """
-    ecosis_data = api_metadata.get('ecosis', {})
-    
-    # Build attribution from ecosis nested data and top-level metadata
-    attribution = {
-        # From ecosis object
-        'package_id': ecosis_data.get('package_id', ''),
-        'package_name': ecosis_data.get('package_name', ''),
-        'package_title': ecosis_data.get('package_title', ''),
-        'organization': ecosis_data.get('organization', ''),
-        'description': ecosis_data.get('description', ''),
-        'license': ecosis_data.get('license', ''),
-        'created': ecosis_data.get('created', ''),
-        'modified': ecosis_data.get('modified', ''),
-        'spectra_count': ecosis_data.get('spectra_count', 0),
-        
-        # From top-level (use helper for list/string handling)
-        'author': _get_api_field(api_metadata, 'Author', join_list=False),
-        'citation': _get_api_field(api_metadata, 'Citation', join_list=False),
-        'funding_source': _get_api_field(api_metadata, 'Funding Source', join_list=False),
-        'year': _get_api_field(api_metadata, 'Year', join_list=False),
-        'keywords': _get_api_field(api_metadata, 'Keywords'),
-        'theme': _get_api_field(api_metadata, 'Theme'),
-        'target_type': _get_api_field(api_metadata, 'Target Type'),
-        'measurement_quantity': _get_api_field(api_metadata, 'Measurement Quantity'),
-        'measurement_units': _get_api_field(api_metadata, 'Measurement Units'),
-        'instrument_manufacturer': _get_api_field(api_metadata, 'Instrument Manufacturer'),
-        'instrument_model': _get_api_field(api_metadata, 'Instrument Model'),
-        'nasa_gcmd_keywords': _get_api_field(api_metadata, 'NASA GCMD Keywords'),
-        'funding_grant_numbers': _get_api_field(api_metadata, 'Funding Source Grant Number'),
-        
-        # Single-value fields
-        'acquisition_method': _get_api_field(api_metadata, 'Acquisition Method', join_list=False),
-        'foreoptic_type': _get_api_field(api_metadata, 'Foreoptic Type', join_list=False),
-        'light_source': _get_api_field(api_metadata, 'Light Source', join_list=False),
-        'target_status': _get_api_field(api_metadata, 'Target Status', join_list=False),
-        'ecosystem_type': _get_api_field(api_metadata, 'Ecosystem Type', join_list=False),
-        'measurement_venue': _get_api_field(api_metadata, 'Measurement Venue', join_list=False),
-    }
-    
-    # DOI handling (with fallback to linked_data)
-    if 'doi' in ecosis_data:
-        doi = ecosis_data['doi']
-        attribution['doi'] = doi
-        if doi.startswith('doi:'):
-            attribution['doi_url'] = f"https://doi.org/{doi[4:]}"
-    
-    # Linked publications (and DOI fallback)
-    if 'linked_data' in ecosis_data:
-        linked_data = ecosis_data['linked_data']
-        if isinstance(linked_data, list) and linked_data:
-            links = []
-            for link in linked_data:
-                if isinstance(link, dict) and 'url' in link and 'label' in link:
-                    links.append(f"{link['label']}: {link['url']}")
-                    # Fallback: extract DOI URL if none exists
-                    if 'doi_url' not in attribution and 'doi.org/' in link.get('url', ''):
-                        attribution['doi_url'] = link['url']
-            if links:
-                attribution['related_publications'] = ' | '.join(links)
-    
-    # Processing info
-    proc_flags = []
-    for field in ['Processing Averaged', 'Processing Interpolated', 'Processing Resampled']:
-        val = _get_api_field(api_metadata, field, join_list=False)
-        if val:
-            proc_flags.append(f"{field.replace('Processing ', '')}: {val}")
-    if proc_flags:
-        attribution['processing_info'] = ' | '.join(proc_flags)
-    
-    # Measurement date (handle range)
-    dates = api_metadata.get('Measurement Date', [])
-    if isinstance(dates, list) and dates:
-        dates = sorted([d for d in dates if d])
-        attribution['measurement_date'] = dates[0] if len(dates) == 1 else f"{dates[0]} to {dates[-1]}"
-    elif isinstance(dates, str) and dates:
-        attribution['measurement_date'] = dates
-    
-    # Remove empty values
-    return {k: v for k, v in attribution.items() if v and str(v).strip()}
-
-
-# ============================================================================
-# ECOSIS UTILITIES
-# ============================================================================
-
-def get_ecosis_csv_metadata_columns(file_path: str) -> List[str]:
-    """
-    Get available metadata column names from an ECOSIS CSV file.
-    
-    Args:
-        file_path: Path to ECOSIS CSV file
-        
-    Returns:
-        List of non-wavelength column names
-    """
-    try:
-        df = pd.read_csv(file_path, nrows=1)  # Only read header row for efficiency
-        
-        metadata_cols = []
-        for col in df.columns:
-            try:
-                wavelength = float(str(col).strip())
-                # Skip if this looks like a wavelength column
-                if 200 <= wavelength <= 3000:
-                    continue
-            except (ValueError, TypeError):
-                # This is a metadata column
-                metadata_cols.append(str(col))
-        
-        return metadata_cols
-        
-    except Exception:
-        return []
-
-
-def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = None, name_column: Optional[str] = None, relevant_metadata: Optional[List[str]] = None) -> List[str]:
+def import_ecosis_csv(file_path: str, output_dir: str, name_column: Optional[str] = None, relevant_metadata: Optional[List[str]] = None) -> List[str]:
     """
     Import ECOSIS CSV file directly. User explicitly chooses this format.
     
     Args:
         file_path: Path to ECOSIS CSV file
         output_dir: Directory to save processed files
-        api_url: Optional ECOSIS API URL for metadata enhancement
         name_column: Optional column name to use for search names (stores column name, not value)
         relevant_metadata: Optional list of column names for Surface Color Preview display
         
@@ -471,25 +295,7 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
         List of created file paths
     """
     try:
-        # Fetch API metadata if provided
-        api_attribution = {}
-        
-        if api_url:
-            success, api_metadata, error_msg = _fetch_ecosis_api_metadata(api_url)
-            if success and api_metadata:
-                api_attribution = _extract_attribution_info(api_metadata)
-                logger.info("Fetched API metadata with %d attribution fields", len(api_attribution))
-            else:
-                logger.warning("Failed to fetch API metadata: %s", error_msg)
-                # Continue without API metadata
-        
-        # Always add source file and API URL to attribution (even if API fetch failed)
-        source_filename = Path(file_path).name
-        api_attribution['source_csv_file'] = source_filename
-        if api_url:
-            api_attribution['api_url'] = api_url
-        
-        df = pd.read_csv(file_path)
+        df = pd.read_csv(file_path, sep=None, engine="python")
         
         if df.empty:
             raise ValueError("CSV file is empty")
@@ -517,7 +323,7 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
         
         created_files = []
         
-        for index, row in df.iterrows():
+        for seq, (index, row) in enumerate(df.iterrows(), start=1):
             # Create sample name from available metadata - use any non-empty metadata columns
             sample_parts = []
             
@@ -532,14 +338,7 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
             
             # Fallback to row index if no metadata found
             if not sample_parts:
-                sample_parts = [f"Sample_{index + 1}"]
-            
-            # Add dataset identifier if available from API
-            if api_attribution and 'organization' in api_attribution:
-                org_short = api_attribution['organization'][:10] if api_attribution['organization'] else ''
-                if org_short:
-                    org_short = re.sub(r'[^\w]', '', org_short)  # Clean organization name
-                    sample_parts.insert(0, org_short)
+                sample_parts = [f"Sample_{seq}"]
             
             # Clean sample name for filename
             sample_name = "_".join(sample_parts).replace(" ", "_")
@@ -583,6 +382,12 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
                 
             filtered_wavelengths = spectral_wavelengths[mask]
             filtered_values = spectral_values[mask]
+            # Normalize to the 0-100 file convention (services/data.py divides
+            # reflectance by 100 on load). ECOSIS CSVs ship 0-1 fractions;
+            # 0-100-scaled sources pass through untouched.
+            if filtered_values.size and filtered_values.max() <= 1.5:
+                filtered_values = filtered_values * 100.0
+
             
             # Interpolate to standard 1nm grid (300-1100nm)
             interp_values = _interp_with_extrapolation(filtered_wavelengths, filtered_values, INTERP_GRID)
@@ -613,17 +418,6 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
                     rows.append(f"# relevant_metadata	{relevant_str}")
                     rows.append("#")  # Blank comment line
             
-            # Add API attribution as comments if available
-            if api_attribution:
-                rows.append("# Dataset Attribution (from ECOSIS API):")
-                for display_name, key in TSV_ATTRIBUTION_FIELDS:
-                    if key in api_attribution and api_attribution[key]:
-                        value = str(api_attribution[key])
-                        if len(value) > 100:
-                            value = value[:100] + "..."
-                        rows.append(f"# {display_name}\t{value}")
-                rows.append("#")  # Blank comment line
-            
             # Simple data table: just Wavelength and Reflectance
             rows.append("Wavelength\tReflectance")
             
@@ -632,29 +426,15 @@ def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = 
                 rows.append(f"{wl}\t{refl:.10f}")
             
             # Save as TSV file  
-            filename = f"{sample_name}_{index+1}.tsv"  # Add index to avoid duplicates
+            filename = f"{sample_name}_{seq}.tsv"  # Sequence number avoids duplicates
             filepath = Path(output_dir) / filename
             
-            with open(filepath, 'w') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(rows))
             
             created_files.append(filepath)
             
-        # Save complete API attribution information to a separate JSON file
-        if api_attribution:
-            attribution_file = Path(output_dir) / "dataset_attribution.json"
-            with open(attribution_file, 'w', encoding='utf-8') as f:
-                json.dump(api_attribution, f, indent=2, ensure_ascii=False)
-            logger.info("Complete attribution information saved to %s", attribution_file)
-            
-        # Log summary of what was processed
-        attribution_info = ""
-        if api_attribution:
-            org = api_attribution.get('organization', 'Unknown')
-            title = api_attribution.get('package_title', 'Unknown')
-            attribution_info = f" with attribution to {org} - {title}"
-        
-        logger.info("Successfully processed %d ECOSIS samples%s", len(created_files), attribution_info)
+        logger.info("Successfully processed %d ECOSIS samples", len(created_files))
         return created_files
         
     except Exception as e:
@@ -757,6 +537,18 @@ def _resample_channel(wavelengths, values, value_label, cap_message_fn=None,
 # FILTER IMPORT
 # ============================================================================
 
+def _paired_columns(df: pd.DataFrame, left: int, right: int):
+    """Row-aligned extraction of a (wavelength, value) column pair.
+
+    Rows where EITHER column is NaN are dropped from both series, so
+    wavelength/value rows stay paired. The previous per-column
+    dropna() desynced the two series whenever a CSV had an interior
+    blank in just one column of the pair.
+    """
+    pair = df.iloc[:, [left, right]].dropna()
+    return pair.iloc[:, 0].to_numpy(), pair.iloc[:, 1].to_numpy()
+
+
 @_import_errors("filter")
 def import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
     """
@@ -785,8 +577,7 @@ def import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
 
     raw_data = _parse_upload(uploaded_file)
 
-    wavelengths = raw_data.iloc[:, 0].dropna().values
-    transmissions = raw_data.iloc[:, 1].dropna().values
+    wavelengths, transmissions = _paired_columns(raw_data, 0, 1)
 
     # Validate, cap at 100, clamp negatives, sort, pick the output range and
     # interpolate via the shared pipeline
@@ -847,8 +638,7 @@ def import_illuminant_from_csv(uploaded_file, description):
 
     raw_data = _parse_upload(uploaded_file)
 
-    wavelengths = raw_data.iloc[:, 0].dropna().values
-    intensity = raw_data.iloc[:, 1].dropna().values
+    wavelengths, intensity = _paired_columns(raw_data, 0, 1)
 
     # Validate, clamp negatives, sort and resample onto the standard grid
     # normalised so the peak is 100 (shared pipeline)
@@ -909,8 +699,7 @@ def import_qe_from_csv(uploaded_file, brand, model):
     # X-Y pairs format: R_wl, R_qe, G_wl, G_qe, B_wl, B_qe
     channels = {}
     for channel, wl_col, val_col in [('R', 0, 1), ('G', 2, 3), ('B', 4, 5)]:
-        wl = raw_data.iloc[:, wl_col].dropna().values
-        qe = raw_data.iloc[:, val_col].dropna().values
+        wl, qe = _paired_columns(raw_data, wl_col, val_col)
         if wl.size == 0 or qe.size == 0:
             return False, f"{channel} channel has empty wavelength or QE data."
 
@@ -992,14 +781,9 @@ def import_film_from_csv(
         else:
             return False, f"Colour film CSV requires 6 columns (R_wl, R_val, G_wl, G_val, B_wl, B_val). Found {raw_data.shape[1]}."
 
-    wavelengths = raw_data.iloc[:, 0].dropna().values
-
     # --- Resample the channel(s) via the shared pipeline ---
     if is_bw:
-        sensitivity = raw_data.iloc[:, 1].dropna().values
-        min_size = min(wavelengths.size, sensitivity.size)
-        wavelengths = wavelengths[:min_size]
-        sensitivity = sensitivity[:min_size]
+        wavelengths, sensitivity = _paired_columns(raw_data, 0, 1)
 
         if log_sensitivity:
             # Log10 input -> linear, normalised so the peak is 100
@@ -1030,11 +814,7 @@ def import_film_from_csv(
 
         channels = {}
         for ch, wl_col, val_col in col_pairs:
-            wl_ch = raw_data.iloc[:, wl_col].dropna().values
-            vals = raw_data.iloc[:, val_col].dropna().values
-            min_size = min(wl_ch.size, vals.size)
-            wl_ch = wl_ch[:min_size]
-            vals = vals[:min_size]
+            wl_ch, vals = _paired_columns(raw_data, wl_col, val_col)
 
             if log_sensitivity:
                 vals = np.power(10.0, vals) / global_peak * 100.0
@@ -1103,8 +883,7 @@ def import_reflectance_absorption_from_csv(uploaded_file, meta, extrap_lower, ex
 
 def _import_standard_reflectance(raw_data, meta, extrap_lower, extrap_upper):
     """Import standard 2-column reflectance data."""
-    wavelengths = raw_data.iloc[:, 0].dropna().values
-    values = raw_data.iloc[:, 1].dropna().values
+    wavelengths, values = _paired_columns(raw_data, 0, 1)
 
     # Validate, sort, pick the output range and interpolate via the shared
     # filter pipeline
@@ -1149,5 +928,5 @@ def _save_reflectance_file(df, meta, extrap_lower, extrap_upper, data_type):
 
 # ============================================================================
 # All import functions are defined above and can be imported individually
-# The UI components have been moved to views/forms.py
+# The UI import flows live in views/ (shelf_data.py, shelf_reflectors.py, actions.py).
 # ============================================================================

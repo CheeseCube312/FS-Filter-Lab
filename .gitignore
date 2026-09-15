@@ -6,3 +6,4 @@ program/data/filters_data/my_filters.json
 program/data/reflectors/default_reflectors.json
 
 __pycache__/
+.clinerules/

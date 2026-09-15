@@ -73,22 +73,8 @@ class FilterCollection:
     extrapolated_masks: np.ndarray  # Shape: (n_filters, n_wavelengths), dtype=bool
     
     def get_display_to_index_map(self) -> Dict[str, int]:
-        """
-        Create mapping from display names to filter indices.
-        
-        Returns:
-            Dictionary mapping filter display names to their matrix row indices
-        """
+        """Map display names to matrix row indices."""
         return {str(f): i for i, f in enumerate(self.filters)}
-
-    def get_display_names(self) -> List[str]:
-        """
-        Get list of display names for all filters in the collection.
-        
-        Returns:
-            List of formatted display names suitable for UI selection widgets
-        """
-        return [str(f) for f in self.filters]
 
 
 @dataclass
@@ -245,18 +231,9 @@ class RGBSensorProfile(SensorProfile):
 
 
 @dataclass
-class ColorSlideFilmProfile(SensorProfile):
-    """
-    Colour reversal (slide/transparency) film, e.g. Ektachrome, Velvia.
-
-    The sensitivity curves represent the three dye layers directly.
-    The final image is a positive, so no display inversion is needed.
-    """
+class FilmProfile(SensorProfile):
+    """Base for film stocks: three dye-layer curves, ``is_film`` always True."""
     channel_data: Dict[str, np.ndarray] = field(default_factory=dict)
-
-    @property
-    def sensor_type(self) -> SensorType:
-        return 'color_slide'
 
     @property
     def is_film(self) -> bool:
@@ -267,7 +244,21 @@ class ColorSlideFilmProfile(SensorProfile):
 
 
 @dataclass
-class ColorNegativeFilmProfile(SensorProfile):
+class ColorSlideFilmProfile(FilmProfile):
+    """
+    Colour reversal (slide/transparency) film, e.g. Ektachrome, Velvia.
+
+    The sensitivity curves represent the three dye layers directly.
+    The final image is a positive, so no display inversion is needed.
+    """
+
+    @property
+    def sensor_type(self) -> SensorType:
+        return 'color_slide'
+
+
+@dataclass
+class ColorNegativeFilmProfile(FilmProfile):
     """
     Colour negative film (C-41, ECN-2, etc.), e.g. Kodak Gold, Portra.
 
@@ -275,26 +266,18 @@ class ColorNegativeFilmProfile(SensorProfile):
     negative, so ``invert_for_display`` is True: the visualisation layer
     applies ``1 - response`` before rendering colour previews.
     """
-    channel_data: Dict[str, np.ndarray] = field(default_factory=dict)
 
     @property
     def sensor_type(self) -> SensorType:
         return 'color_negative'
 
     @property
-    def is_film(self) -> bool:
-        return True
-
-    @property
     def invert_for_display(self) -> bool:
         return True
 
-    def get_channels(self) -> Dict[str, np.ndarray]:
-        return self.channel_data
-
 
 @dataclass
-class BWFilmProfile(SensorProfile):
+class BWFilmProfile(FilmProfile):
     """
     Black-and-white panchromatic (or orthochromatic) film.
 
@@ -309,10 +292,6 @@ class BWFilmProfile(SensorProfile):
     def sensor_type(self) -> SensorType:
         return 'bw'
 
-    @property
-    def is_film(self) -> bool:
-        return True
-
     def get_channels(self) -> Dict[str, np.ndarray]:
         return {'R': self.sensitivity, 'G': self.sensitivity, 'B': self.sensitivity}
 
@@ -323,14 +302,8 @@ class BWFilmProfile(SensorProfile):
 
 @dataclass
 class AppData:
-    """Typed container for all loaded application data.
-
-    Replaces the untyped dict previously returned by
-    ``initialize_application_data()``.
-    """
+    """Typed container for all loaded application data."""
     filter_collection: FilterCollection
-    camera_keys: List[str]
-    qe_data: Dict[str, Dict[str, np.ndarray]]
     default_key: str
     illuminants: Dict[str, np.ndarray]
     illuminant_metadata: Dict[str, str]

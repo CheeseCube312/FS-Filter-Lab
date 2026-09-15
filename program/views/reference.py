@@ -11,7 +11,5 @@ def render_reference(ctx: Dict[str, Any]) -> None:
     if vm.note:
         ui.label(vm.note).classes("text-body2 text-grey-6")
     for title, fig in vm.sections:
-        if fig is None:
-            continue
         ui.label(title).classes("text-subtitle1 q-mt-sm")
         ui.plotly(fig).classes("w-full")
