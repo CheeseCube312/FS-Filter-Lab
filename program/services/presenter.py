@@ -25,7 +25,6 @@ from services.calculations import (
     compute_filter_transmission,
     compute_selected_filter_indices,
     compute_effective_stops,
-    compute_active_transmission,
     effective_transmission,
     compute_reflector_color,
     compute_white_reference_color,
@@ -197,11 +196,8 @@ def _compute_film_emulation_target(
     # Compute independent film-target filter transmission
     emul_filter_names = app_state.film_emulation_filters
     if emul_filter_names:
-        emul_indices = compute_selected_filter_indices(
+        film_filter = effective_transmission(
             emul_filter_names, {}, filter_collection
-        )
-        film_filter = compute_active_transmission(
-            emul_indices, filter_collection.filter_matrix
         )
     else:
         film_filter = np.ones_like(illuminant)
@@ -268,16 +264,11 @@ def prepare_sensor_analysis(
 ) -> SensorAnalysisVM:
     """Prepare the sensor response chart and white-balance display."""
     filter_collection = data.filter_collection
-    selected_indices = compute_selected_filter_indices(
+    # Compute active transmission
+    trans_interp = effective_transmission(
         app_state.selected_filters,
         app_state.filter_multipliers,
         filter_collection,
-    )
-
-    # Compute active transmission
-    trans_interp = compute_active_transmission(
-        selected_indices,
-        filter_collection.filter_matrix
     )
 
     # WB gains are maintained by the action layer (§5); presenters only read.

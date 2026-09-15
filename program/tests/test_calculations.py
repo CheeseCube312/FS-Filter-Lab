@@ -50,22 +50,6 @@ class ComputeFilterTransmission(TestCase):
         self.assertTrue(np.all(trans == 0.125))
 
 
-class ComputeActiveTransmission(TestCase):
-    def test_empty_selection_is_identity(self):
-        self.assertNanEqual(
-            calc.compute_active_transmission([], collection().filter_matrix),
-            np.ones_like(GRID))
-
-    def test_zero_product_stays_zero_unclipped(self):
-        # The raw combinator: contrast with compute_filter_transmission's clip.
-        trans = calc.compute_active_transmission([0, 2], collection().filter_matrix)
-        self.assertTrue(np.all(trans == 0.0))
-
-    def test_repeated_indices_multiply_repeatedly(self):
-        trans = calc.compute_active_transmission([0, 0], collection().filter_matrix)
-        self.assertTrue(np.all(trans == 0.25))
-
-
 class ComputeSelectedFilterIndices(TestCase):
     def test_multipliers_repeat_the_row(self):
         indices = calc.compute_selected_filter_indices(
@@ -106,6 +90,19 @@ class EffectiveTransmission(TestCase):
         trans = calc.effective_transmission(
             [display_name("Ghost", "G9", "Nowhere")], {}, collection())
         self.assertNanEqual(trans, np.ones_like(GRID))
+
+    def test_zero_product_stays_zero_unclipped(self):
+        # The raw combinator: contrast with compute_filter_transmission's clip.
+        trans = calc.effective_transmission(
+            [display_name("Half", "H1", "Test"),
+             display_name("Zero", "Z9", "Test")], {}, collection())
+        self.assertTrue(np.all(trans == 0.0))
+
+    def test_repeated_indices_multiply_repeatedly(self):
+        trans = calc.effective_transmission(
+            [display_name("Half", "H1", "Test")],
+            {display_name("Half", "H1", "Test"): 2}, collection())
+        self.assertTrue(np.all(trans == 0.25))
 
 
 class ComputeEffectiveStops(TestCase):

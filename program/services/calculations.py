@@ -44,18 +44,6 @@ def compute_filter_transmission(
     return filter_matrix[filter_indices[0]], "Single"
 
 
-def compute_active_transmission(
-    selected_indices: List[int],
-    filter_matrix: np.ndarray
-) -> np.ndarray:
-    """Combined stack curve (unclipped); identity spectrum when empty."""
-    if selected_indices and filter_matrix is not None:
-        transmissions = [filter_matrix[idx] for idx in selected_indices]
-        return combine_transmission(transmissions)
-
-    return np.ones_like(INTERP_GRID)  # Identity transmission (no filter effect)
-
-
 def effective_transmission(
     selected_filters: List[str],
     filter_multipliers: Dict[str, int],
@@ -80,7 +68,11 @@ def effective_transmission(
     indices = compute_selected_filter_indices(
         selected_filters, filter_multipliers, filter_collection
     )
-    return compute_active_transmission(indices, filter_collection.filter_matrix)
+    if indices and filter_collection.filter_matrix is not None:
+        transmissions = [filter_collection.filter_matrix[idx] for idx in indices]
+        return combine_transmission(transmissions)
+
+    return np.ones_like(INTERP_GRID)
 
 
 def compute_selected_filter_indices(
