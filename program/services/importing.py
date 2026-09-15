@@ -38,7 +38,6 @@ from pathlib import Path
 from typing import Tuple, Dict, List, Optional
 import functools
 import logging
-import re
 from models.constants import INTERP_GRID, DATA_FOLDERS, OUTPUT_FOLDERS, FILM_TSV_FIELDS
 
 # Configure logging for debugging import issues

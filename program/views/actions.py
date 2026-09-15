@@ -12,9 +12,7 @@ This module contains no NiceGUI layout code. The one sanctioned UI call is
 """
 import io
 import logging
-import tempfile
 import time
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set
 
 import numpy as np

@@ -9,7 +9,6 @@ never on any UI toolkit.
 """
 # Standard library imports
 import colorsys
-import io
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
