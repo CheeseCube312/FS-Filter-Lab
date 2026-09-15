@@ -1,4 +1,4 @@
-"""services.reporting — the PNG report smoke test + filename sanitizer.
+"""services.visualization — the PNG report smoke test + filename sanitizer.
 
 One end-to-end report through generate_application_report into a throwaway
 output tree: PNG magic bytes, a real file at the camera/illuminant path, and

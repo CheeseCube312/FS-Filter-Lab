@@ -11,13 +11,11 @@ models/      # Data structures and constants
   - core.py        # Filter, FilterCollection, Reflector*, SensorProfile hierarchy, AppData
 services/    # Framework-agnostic data processing and logic
   - calculations.py    # Mathematical operations, transmission metrics
-  - visualization.py   # Plotly chart generation for UI views
+  - visualization.py   # Plotly charts for UI views + matplotlib PNG report rendering
   - presenter.py       # View-model builder; advanced search compute
   - data.py            # TSV loading, caching, data normalization
   - importing.py       # Data import (filters, film profiles, QE, ECOSIS)
-  - reporting.py       # PNG report rendering (matplotlib) + filename sanitization
   - spectra.py         # Pure spectral-physics core (combine, integrate, WB gains)
-  - channel_mixer.py   # RGB channel matrix manipulation
   - state_manager.py   # Application state management
 views/       # NiceGUI UI components (zero computation — render view models only)
   - shell.py            # App shell/layout; action dispatch wiring
