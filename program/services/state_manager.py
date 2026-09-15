@@ -25,6 +25,28 @@ from services.spectra import wb_gains as compute_wb_gains
 logger = logging.getLogger(__name__)
 
 DEFAULT_REFLECTORS_FILE = "program/data/reflectors/default_reflectors.json"
+def _load_json_list(path: str, key: str) -> list:
+    """Read a JSON object from ``path`` and return its ``key`` list (or [])."""
+    fp = Path(path)
+    if fp.exists():
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+            return data.get(key, [])
+        except (json.JSONDecodeError, IOError) as exc:
+            logger.warning("Could not read %s: %s", fp, exc)
+            return []
+    return []
+
+
+def _save_json_list(path: str, key: str, items: list) -> None:
+    """Write ``{key: items}`` as JSON to ``path``, creating parent folders."""
+    fp = Path(path)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fp.write_text(json.dumps({key: items}, indent=2), encoding="utf-8")
+    except IOError as exc:
+        logger.warning("Could not save %s: %s", fp, exc)
+
 
 
 def _default_wavelength_criteria() -> List[Dict[str, int]]:
@@ -199,26 +221,10 @@ class AppState:
     # ====================================================================
 
     def _load_default_reflectors_from_file(self) -> List[str]:
-        fp = Path(DEFAULT_REFLECTORS_FILE)
-        if fp.exists():
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                return data.get("default_reflectors", [])
-            except (json.JSONDecodeError, IOError) as exc:
-                logger.warning("Could not read %s: %s", fp, exc)
-                return []
-        return []
+        return _load_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors")
 
     def _save_default_reflectors_to_file(self, reflector_files: List[str]) -> None:
-        fp = Path(DEFAULT_REFLECTORS_FILE)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fp.write_text(
-                json.dumps({"default_reflectors": reflector_files}, indent=2),
-                encoding="utf-8",
-            )
-        except IOError as exc:
-            logger.warning("Could not save %s: %s", fp, exc)
+        _save_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors", reflector_files)
 
     def get_default_reflector_files(self) -> List[str]:
         return self._default_reflector_files
@@ -246,26 +252,10 @@ class AppState:
     # ====================================================================
 
     def _load_my_filters_from_file(self) -> List[str]:
-        fp = Path(MY_FILTERS_FILE)
-        if fp.exists():
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                return data.get("my_filters", [])
-            except (json.JSONDecodeError, IOError) as exc:
-                logger.warning("Could not read %s: %s", fp, exc)
-                return []
-        return []
+        return _load_json_list(MY_FILTERS_FILE, "my_filters")
 
     def _save_my_filters_to_file(self, filter_names: List[str]) -> None:
-        fp = Path(MY_FILTERS_FILE)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fp.write_text(
-                json.dumps({"my_filters": sorted(filter_names)}, indent=2),
-                encoding="utf-8",
-            )
-        except IOError as exc:
-            logger.warning("Could not save %s: %s", fp, exc)
+        _save_json_list(MY_FILTERS_FILE, "my_filters", sorted(filter_names))
 
     def get_my_filters(self) -> set:
         return self._my_filters_set
