@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from models.core import FilterCollection  # noqa: F401  (type contract)
-from services.reporting import (
+from services.visualization import (
     generate_application_report,
     generate_report_png,
     sanitize_filename_component,

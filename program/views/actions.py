@@ -22,7 +22,7 @@ from nicegui import ui
 
 from models.constants import FILM_TYPES, OUTPUT_FOLDERS
 from models.core import AppData, ChannelMixerSettings
-from services.reporting import generate_application_report
+from services.visualization import generate_application_report
 from services.data import (
     load_filter_collection,
     load_illuminant_collection,

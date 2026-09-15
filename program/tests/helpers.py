@@ -195,7 +195,7 @@ def report_sandbox():
     with tempfile.TemporaryDirectory() as tmp:
         reports = str(Path(tmp) / "output")
         os.makedirs(reports, exist_ok=True)
-        with mock.patch.multiple("services.reporting",
+        with mock.patch.multiple("services.visualization",
                                  OUTPUT_FOLDERS={"reports": reports}):
             yield Path(reports)
 
