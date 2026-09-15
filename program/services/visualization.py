@@ -16,7 +16,7 @@ from models.constants import (
     CHART_HEIGHTS, CHART_LINE_STYLES, CHART_COLORS, EPSILON,
     SENSOR_RESPONSE_DEFAULTS, SENSOR_TYPE_LABELS
 )
-from services.channel_mixer import apply_channel_mixing_to_responses
+from services.spectra import apply_channel_mixing_to_responses
 
 
 def _invert_negative(responses: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:

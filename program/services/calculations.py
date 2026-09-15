@@ -12,8 +12,10 @@ from typing import Dict, List, Tuple, Optional
 # Local imports
 from models.constants import DEFAULT_HEX_COLOR, EPSILON, INTERP_GRID
 from models.core import FilterCollection, ChannelMixerSettings
-from services.channel_mixer import apply_channel_mixing_to_colors
-from services.spectra import combine_transmission, integrated_response, is_valid_spectrum
+from services.spectra import (
+    apply_channel_mixing_to_colors, combine_transmission,
+    integrated_response, is_valid_spectrum
+)
 
 
 # ============================================================================

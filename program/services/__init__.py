@@ -4,7 +4,6 @@ Services package for FS FilterLab.
 Core business logic and processing services:
 
 - calculations: Mathematical computations for transmission and color analysis
-- channel_mixer: RGB channel-mixing transforms for responses and colors
 - data: Data loading and caching services with automatic validation
 - importing: File import utilities for various spectral data formats
 - presenter: Read-only view-model builders bridging services and the UI layer

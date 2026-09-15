@@ -11,7 +11,7 @@ import numpy as np
 from models.constants import DEFAULT_WB_GAINS
 from models.core import ChannelMixerSettings
 from services import spectra
-from services.channel_mixer import apply_channel_mixing_to_responses
+from services.spectra import apply_channel_mixing_to_responses
 from tests.helpers import TestCase, flat, toy, with_nan
 
 
