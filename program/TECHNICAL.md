@@ -7,7 +7,7 @@ As-is reference plus the core design principles that keep the codebase consisten
 ```
 app.py       # NiceGUI application entry point
 models/      # Data structures and constants
-  - constants.py   # Centralized configuration, error messages, UI text
+  - constants.py   # Centralized configuration, error messages, UI text, feature flags (FEATURES)
   - core.py        # Filter, FilterCollection, Reflector*, SensorProfile hierarchy, AppData
 services/    # Framework-agnostic data processing and logic
   - calculations.py    # Mathematical operations, transmission metrics
@@ -19,15 +19,14 @@ services/    # Framework-agnostic data processing and logic
   - state_manager.py   # Application state management
 views/       # NiceGUI UI components (zero computation — render view models only)
   - shell.py            # App shell/layout; action dispatch wiring
-  - setup_rail.py       # Setup rail controls
+  - setup_rail.py       # Setup rail controls (receiver, illuminant, stack editor)
   - shelf_data.py       # Data shelf + per-card CSV import expansions
-  - shelf_filters.py    # Filters shelf: quick/advanced search, sparkline cards, My Filters
-  - shelf_reflectors.py # Reflectors shelf: library search, spectrum sparklines, add-as-surface actions
+  - shelf_filters.py    # Filters shelf: live quick/advanced search, detail dialog, My Filters
+  - shelf_reflectors.py # Reflectors shelf (hidden: gated by FEATURES["reflectance"])
   - actions.py          # Imperative action handlers (imports, report generation)
-  - film_match.py       # Film Match feature view
   - sensor_response.py  # Sensor response view
   - transmission.py     # Transmission metrics view
-  - scene_preview.py    # Scene Preview card: render swatches, camera-look toggle
+  - scene_preview.py    # Scene Preview card (hidden: gated by FEATURES["reflectance"])
   - reference.py        # Raw QE / illuminant lookup view (collapsed fold-out)
 tests/       # unittest suite (calculations, data, importing, presenter, spectra, state, report)
 data/        # Spectral data files (TSV format)
@@ -80,18 +79,16 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 ### Presenter / View-Model Pattern
 `services/presenter.py` is framework-agnostic and bridges business logic and UI:
 
-- Computes everything a view needs (charts, metrics, messages) and bundles it in typed view-model dataclasses: `FilterAnalysisVM`, `SensorAnalysisVM`, `TransmissionMetricsVM`, `WhiteBalanceVM`, `ScenePreviewVM`/`SceneSwatchVM`
+- Computes everything a view needs (charts, metrics, messages) and bundles it in typed view-model dataclasses: `FilterAnalysisVM`, `SensorAnalysisVM`, `TransmissionMetricsVM`, `WhiteBalanceVM`, `ScenePreviewVM`/`SceneSwatchVM`, `FilterRowVM`/`FilterShelfVM` (search rows), `StackRowVM` (stack editor), `FilterDetailVM` (detail dialog)
 - Views in `views/` contain **zero computation** — they render view models and dispatch user input
 - Imperative actions (report generation) are handled by `views/actions.py`, which calls services directly (`services.visualization` for PNG reports, `services.importing` for staged imports)
 
 ### Feature Map
-- **Advanced Filter Search**: manufacturer/hex-color/wavelength-transmission criteria with live sparkline previews (`views/shelf_filters.py`; compute in `presenter.search_filters`, previews via `presenter._create_filter_sparkline`)
-- **Advanced Reflector Search**: filter by organization or target type — only bites on reflector metadata, which the stock plant TSVs don't carry (`views/shelf_reflectors.py`; compute in `presenter.search_reflectors`, previews via `presenter._create_reflector_sparkline`)
-- **Scene Preview**: card below the Sensor response card with one render swatch per surface, following the camera-look toggle (filmic tone curve + chroma boost, default on; negative film is inverted). Each swatch carries a reflectance sparkline and a partial-data flag when >10% of the chain's spectral weight (`SCENE_COVERAGE_LIMIT`) lands on wavelengths without reflectance data; the popover shows the active render's linear R/G/B. WB + remove live in the swatch popover (`views/scene_preview.py`; compute in `presenter.prepare_scene_preview`, look via `calculations.apply_camera_look`)
-- **My Filters Manager**: curate owned filters, persisted to `data/filters_data/my_filters.json`, with a "My Filters only" sidebar toggle
-- **White Balance from Surface Reference**: pick any loaded reflector as WB source (popover on a Scene Preview swatch); gains recompute against it (`AppState.recompute_white_balance`, `wb_reference_surface` state)
-- **Film Emulation Target**: overlay a film profile's response as a target with its own independent filter stack and white balance
-- **Imports**: per-card CSV upload expansion cards on the Data shelf (`views/shelf_data.py`); dispatched via `views/actions.py` → `services/importing.py`
+- **Advanced Filter Search**: manufacturer/wavelength-transmission criteria with live sparkline previews; results refresh live (no Apply), "Owned only" applies in advanced search too, Show-more paging past 60 rows, and a per-row detail dialog (`views/shelf_filters.py`; compute in `presenter.search_filters` / `prepare_filter_rows`, previews via `presenter._create_filter_sparkline`)
+- **Transmission chart underlays**: each stacked filter draws faint as its multiplied curve (T^N) beneath the bold Combined line (`create_filter_response_plot(stack_entries=...)`, entries built in `presenter.prepare_filter_analysis`)
+- **Reflectance workflow — gated OFF**: Reflectors shelf, Scene Preview card, surface-spectrum import and WB-from-surface are hidden behind `FEATURES["reflectance"]` (`models/constants.py`); services, data and tests stay intact — flip the flag to restore
+- **My Filters Manager**: curate owned filters from the Filters shelf, persisted to `data/filters_data/my_filters.json`, with an "Owned only" toggle honored by quick and advanced search alike
+- **Imports**: per-card CSV upload expansion cards on the Data shelf (`views/shelf_data.py`; the surface-spectrum card is gated); dispatched via `views/actions.py` → `services/importing.py`
 
 ## Data Flow
 
@@ -137,7 +134,7 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 
 ## Testing
 
-Standard-library `unittest` suite in `tests/` — run `python -m unittest discover` from `program/` (183 tests covering calculations, data loading, importing, presenter, spectra, state, and report rendering). Report tests compare against golden outputs via `numpy.testing`. Harness strategy beyond this suite is an open decision.
+Standard-library `unittest` suite in `tests/` — run `python -m unittest discover` from `program/` (189 tests covering calculations, data loading, importing, presenter, spectra, state, report rendering, and the spectrum-strip visualization). Report tests compare against golden outputs via `numpy.testing`. Harness strategy beyond this suite is an open decision.
 
 ## Deployment
 
@@ -199,4 +196,4 @@ a real rewrite of data + search, not planned.
 - **Reporting stays a service**: PNG report generation lives in `services/visualization.py` (driven from `views/actions.py`); do not fold it into the presenter
 - **Presenter VMs carry `go.Figure` objects** — couples view models to Plotly; revisit only on a UI-framework swap
 - **Per-shelf manufacturer option lists and reflector target-type lists are built in views** — should come from presenter/constants
-- **`my_filters_only` toggle applies only in the quick-search branch**, not advanced search (product decision pending)
+- **Reflectance workflow parked behind `FEATURES["reflectance"]`** — re-enable (and re-document) once the reflector library grows

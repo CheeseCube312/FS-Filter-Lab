@@ -13,10 +13,13 @@ Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Pr
 - Import your own filter, QE, film, or illuminant data (TSV format)
 - Export analysis as PNG reports
 - Advanced search: filter by manufacturer, color, or transmission at specific wavelengths
-- Surface reflector library with default curated lists
-- Scene Preview card: per-surface render swatches with a default-on "camera look" (filmic tone curve + chroma)
 - Fast caching system for instant data loading
 - Interactive Plotly charts with zoom and hover details
+
+Note: the reflectance workflow (Reflectors shelf, Scene Preview card, surface
+white-balance references) ships disabled in this build — gated behind
+`FEATURES["reflectance"]` in `program/models/constants.py`; flip the flag to
+restore it.
 
 ## Quick Start
 
@@ -45,20 +48,17 @@ Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Pr
 
 ## How to Use
 
-1. **Select filters** from the sidebar dropdown
-2. **Adjust stack counts** if you want multiple instances of a filter
-3. **Pick a camera QE profile** and an **illuminant** (light source)
+1. **Select filters** from the Filters shelf (right drawer)
+2. **Adjust stack counts** if you want multiple instances of a filter (sidebar stack editor)
+3. **Pick a receiver profile** (camera QE or film stock) and an **illuminant** (light source)
 4. **View results**: transmission charts, RGB response curves, color metrics
-5. **Add reflectors** to the Scene Preview card to see how surfaces render under your filter stack (one swatch per surface)
-6. **Export PNG reports** for documentation
+5. **Export PNG reports** for documentation
 
 ### Advanced Features
-- **Advanced Filter Search**: Filter by manufacturer, hex color, or transmission at specific wavelengths with live sparkline previews
-- **Advanced Reflector Search**: Filter surfaces by organization or target type (applies to imported files carrying that metadata) with reflectance sparkline previews
-- **My Filters Manager**: Curate your own filter collection with a "My Filters only" toggle
-- **White Balance from Surface Reference**: Use any loaded reflector (via a Scene Preview swatch's popover) as the white balance source
+- **Advanced Filter Search**: Filter by manufacturer, hex color, or transmission at specific wavelengths with live sparkline previews — results update live, with a per-row detail dialog and Show-more paging
+- **My Filters Manager**: Curate your own filter collection with an "Owned only" toggle (quick and advanced search both honor it)
 - **Channel Mixer**: Apply custom RGB channel mixing matrices
-- **Import Data**: Add your own filters, illuminants, camera QE curves, film profiles, and reflector data from the import cards on the Data tab
+- **Import Data**: Add your own filters, illuminants, camera QE curves, or film profiles from the import cards on the Data tab
 - **Automatic Cache**: Cached data rebuilds silently whenever data files change — nothing to manage
 
 ## Project Structure
