@@ -3,6 +3,8 @@ from typing import Any, Dict
 
 from nicegui import ui
 
+from services.presenter import StackRowVM, prepare_stack_rows
+
 
 def render_setup_rail(ctx: Dict[str, Any]) -> None:
     app_state = ctx["app_state"]
@@ -14,22 +16,25 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
     sensors = sorted(k for k, p in profiles.items() if not p.is_film)
     films = sorted(k for k, p in profiles.items() if p.is_film)
     current = app_state.selected_camera
-    current_is_film = bool(app_state.active_profile and app_state.active_profile.is_film)
 
-    # --- Receiver selection: sensor OR film (single active_profile slot) ---
+    # --- Receiver selection: ONE dropdown covering sensors AND film ----------
+    # Both feed the same active_profile slot (select_sensor looks up by
+    # display name across every profile); grouping keeps sensor vs. film
+    # visible without two dropdowns fighting over a single slot.
+    receiver_options: Dict[str, Any] = {}
+    if sensors:
+        receiver_options["Digital sensors"] = sensors
+    if films:
+        receiver_options["Film"] = films
+    if not receiver_options:
+        receiver_options["No receiver profiles loaded"] = []
+
     ui.select(
-        sensors if sensors else ["No sensors loaded"],
-        value=(current if current and not current_is_film else None),
-        label="Sensor",
+        receiver_options,
+        value=current,
+        label="Receiver",
         on_change=lambda e: ctx["dispatch"]("select_sensor", {"name": e.value}),
     ).classes("w-full").props('clearable outlined dense')
-
-    ui.select(
-        ["None"] + films,
-        value=(current if current_is_film else "None"),
-        label="Film",
-        on_change=lambda e: ctx["dispatch"]("select_film", {"name": e.value}),
-    ).classes("w-full").props("outlined dense")
 
     ui.select(
         sorted(data.illuminants.keys()),
@@ -43,8 +48,8 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
     if not app_state.selected_filters:
         ui.label("Stack is empty.").classes("text-body2 text-grey-6")
     else:
-        for name in app_state.selected_filters:
-            _render_stack_row(ctx, name)
+        for row in prepare_stack_rows(app_state, data.filter_collection):
+            _render_stack_row(ctx, row)
         ui.button(
             "Clear stack",
             icon="delete_sweep",
@@ -52,16 +57,27 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
         ).props("flat dense color=negative")
 
 
-def _render_stack_row(ctx: Dict[str, Any], name: str) -> None:
+def _render_stack_row(ctx: Dict[str, Any], row: StackRowVM) -> None:
     with ui.row().classes("w-full items-center no-wrap q-py-xs"):
-        ui.label(name).classes("text-body2 col ellipsis")
+        ui.element("div").style(
+            f"background: {row.hex_color}; width: 14px; height: 14px; "
+            "border: 1px solid #999; flex: none;"
+        ).tooltip(row.display_name)
+        ui.label(row.display_name).classes("text-body2 col ellipsis")
         ui.select(
             [1, 2, 3, 4, 5],
-            value=ctx["app_state"].filter_multipliers.get(name, 1),
-            on_change=lambda e, n=name: ctx["dispatch"]("set_multiplier", {"name": n, "value": e.value}),
-        ).classes("w-16").props("dense outlined")
+            value=row.multiplier,
+            on_change=lambda e, n=row.display_name: ctx["dispatch"](
+                "set_multiplier", {"name": n, "value": e.value},
+            ),
+        ).classes("w-16").props("dense outlined").tooltip(
+            f"Stacked ×{row.multiplier} — each pass multiplies the filter's "
+            f"transmission (T^{row.multiplier})"
+        )
         ui.button(
             icon="close",
-            on_click=lambda n=name: ctx["dispatch"]("remove_filter", {"name": n}),
+            on_click=lambda n=row.display_name: ctx["dispatch"](
+                "remove_filter", {"name": n},
+            ),
         ).props("flat dense round size=sm color=negative")
 

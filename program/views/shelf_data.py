@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict
 
 from nicegui import ui
 
-from models.constants import FILM_TYPES
+from models.constants import FEATURES, FILM_TYPES
 
 
 def render_data_shelf(ctx: Dict[str, Any]) -> None:
@@ -27,14 +27,15 @@ def render_data_shelf(ctx: Dict[str, Any]) -> None:
         button_label="Import filter",
         fields=_filter_fields,
     )
-    _staged_import_card(
-        ctx, key="spectrum",
-        title="Surface spectrum CSV (reflectance/absorption)", icon="texture",
-        note="2 columns: wavelength (nm), reflectance or absorption (%).",
-        upload_label="Choose surface CSV",
-        button_label="Import surface spectrum",
-        fields=_spectrum_fields,
-    )
+    if FEATURES["reflectance"]:
+        _staged_import_card(
+            ctx, key="spectrum",
+            title="Surface spectrum CSV (reflectance/absorption)", icon="texture",
+            note="2 columns: wavelength (nm), reflectance or absorption (%).",
+            upload_label="Choose surface CSV",
+            button_label="Import surface spectrum",
+            fields=_spectrum_fields,
+        )
     _staged_import_card(
         ctx, key="illuminant",
         title="Illuminant CSV", icon="wb_sunny",

@@ -36,6 +36,18 @@ VISIBLE_MAX_NM = 700
 EPSILON = 1e-6  # Small value to prevent division by zero and log domain errors
 
 # =============================================================================
+# FEATURE FLAGS
+# =============================================================================
+# Reflectance workflow (Reflectors shelf tab, Scene Preview card, surface
+# white-balance references, surface-spectrum import) is gated OFF for this
+# release: only a handful of reflector spectra exist, so the panels read as
+# half-finished.  Services, models, tests and reflector data stay intact;
+# flip the flag to True to restore the full UI.
+FEATURES = {
+    "reflectance": False,
+}
+
+# =============================================================================
 # DATA FOLDER STRUCTURE
 # =============================================================================
 

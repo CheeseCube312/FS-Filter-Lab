@@ -3,6 +3,7 @@ from typing import Any, Callable, Dict
 
 from nicegui import ui
 
+from models.constants import FEATURES
 from services.presenter import prepare_header_status
 from views.actions import handle_app_action
 from views.reference import render_reference
@@ -36,12 +37,14 @@ def build_page(app_state, data) -> None:
         registry[key] = panel.refresh  # dirty-key dispatch re-renders it
 
     _panel("setup", render_setup_rail)
-    _panel("scene_preview", render_scene_preview)
+    if FEATURES["reflectance"]:
+        _panel("scene_preview", render_scene_preview)
     _panel("transmission", render_transmission)
     _panel("sensor_response", render_sensor_response)
     _panel("reference", render_reference)
     _panel("shelf_filters", render_filters_shelf)
-    _panel("shelf_reflectors", render_reflectors_shelf)
+    if FEATURES["reflectance"]:
+        _panel("shelf_reflectors", render_reflectors_shelf)
     _panel("shelf_data", render_data_shelf)
 
     # Nested region inside the sensor_response panel: only the chart block
@@ -125,13 +128,15 @@ def build_page(app_state, data) -> None:
     with ui.right_drawer(bordered=True).classes("bg-grey-1 p-3").props("behavior=desktop width=390") as shelf_drawer:
         with ui.tabs() as shelf_tabs:
             ui.tab("filters", "Filters")
-            ui.tab("reflectors", "Reflectors")
+            if FEATURES["reflectance"]:
+                ui.tab("reflectors", "Reflectors")
             ui.tab("data", "Data")
         with ui.tab_panels(shelf_tabs, value="filters").classes("w-full"):
             with ui.tab_panel("filters"):
                 panels["shelf_filters"]()
-            with ui.tab_panel("reflectors"):
-                panels["shelf_reflectors"]()
+            if FEATURES["reflectance"]:
+                with ui.tab_panel("reflectors"):
+                    panels["shelf_reflectors"]()
             with ui.tab_panel("data"):
                 panels["shelf_data"]()
     shelf_drawer.props("breakpoint=0")
@@ -139,6 +144,7 @@ def build_page(app_state, data) -> None:
     with ui.column().classes("q-px-lg q-py-md w-full max-w-[1100px]"):
         panels["transmission"]()
         panels["sensor_response"]()
-        panels["scene_preview"]()
+        if FEATURES["reflectance"]:
+            panels["scene_preview"]()
         panels["reference"]()
 
