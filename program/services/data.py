@@ -39,10 +39,12 @@ T = TypeVar('T')
 
 
 def _interpolate_to_standard_grid(wavelengths: np.ndarray, values: np.ndarray) -> np.ndarray:
-    """Interpolate spectral values onto the standard INTERP_GRID."""
-    interp_vals = np.interp(INTERP_GRID, wavelengths, values, left=np.nan, right=np.nan)
-    # Replace NaN with 0 (represents no transmission/response outside measured range)
-    return np.nan_to_num(interp_vals, nan=0.0)
+    """Interpolate spectral values onto the standard INTERP_GRID.
+
+    Wavelengths outside the measured range stay NaN ("unknown") — the
+    spectra helpers exclude or propagate them; nothing is fabricated.
+    """
+    return np.interp(INTERP_GRID, wavelengths, values, left=np.nan, right=np.nan)
 
 
 def _parse_comment_headers(file_path: str | Path) -> Tuple[Dict[str, str], List[str]]:
@@ -404,8 +406,8 @@ def _process_film_file(path: Path) -> Optional[Tuple[str, SensorProfile]]:
         if col not in df.columns or not (~pd.isna(df[col])).any():
             return None
         vals = _interpolate_to_standard_grid(wavelength, df[col].values)
-        # Normalise to 0-1 if stored as 0-100
-        if vals.max() > 1.5:
+        # Normalise to 0-1 if stored as 0-100 (nanmax: blank cells stay NaN)
+        if np.nanmax(vals) > 1.5:
             vals = vals / 100.0
         return vals
 

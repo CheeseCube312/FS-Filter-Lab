@@ -1,4 +1,4 @@
-"""Filters shelf: quick + advanced search, results, My Filters (§3.3)."""
+"""Filters shelf: quick + advanced search, results, My Filters."""
 from typing import Any, Dict
 
 from nicegui import ui
@@ -10,7 +10,6 @@ _RESULT_LIMIT = 60
 
 def render_filters_shelf(ctx: Dict[str, Any]) -> None:
     app_state = ctx["app_state"]
-    data = ctx["data"]
     page_state = ctx["page_state"]
 
     ui.label("Filters").classes("text-h6")
@@ -52,11 +51,15 @@ def render_filters_shelf(ctx: Dict[str, Any]) -> None:
     mf.on_value_change(lambda e: page_state.__setitem__("mf_open", e.value))
 
 
+def _manufacturer_names(data) -> list:
+    return sorted(set(data.filter_collection.df["Manufacturer"].astype(str)))
+
+
 def _render_advanced(ctx: Dict[str, Any]) -> None:
     app_state = ctx["app_state"]
     data = ctx["data"]
 
-    manufacturers = sorted(set(data.filter_collection.df["Manufacturer"].astype(str)))
+    manufacturers = _manufacturer_names(data)
     ui.select(
         manufacturers,
         multiple=True,
@@ -71,7 +74,7 @@ def _render_advanced(ctx: Dict[str, Any]) -> None:
         "text-caption text-grey-7 q-mt-sm"
     )
     criteria = app_state.advanced_search_wavelength_criteria
-    for i, crit in enumerate(list(criteria)):
+    for i, crit in enumerate(criteria):
         with ui.row().classes("w-full items-center no-wrap"):
             ui.number(
                 value=crit["wavelength"], min=300, max=1100, format="%.0f",
@@ -126,7 +129,7 @@ def _render_results(ctx: Dict[str, Any]) -> None:
     data = ctx["data"]
     page_state = ctx["page_state"]
 
-    use_advanced = bool(page_state.get("adv_open", False))
+    use_advanced = page_state.get("adv_open", False)
     query = page_state.get("filter_query", "")
 
     if not use_advanced and not query.strip():
@@ -135,7 +138,7 @@ def _render_results(ctx: Dict[str, Any]) -> None:
         )
         return
 
-    rows = prepare_filter_rows(
+    shelf = prepare_filter_rows(
         app_state,
         data,
         query=query,
@@ -143,18 +146,19 @@ def _render_results(ctx: Dict[str, Any]) -> None:
         limit=_RESULT_LIMIT,
     )
 
-    if not rows:
+    if not shelf.rows:
         ui.label("No matches — adjust the search or criteria.").classes(
             "text-body2 text-grey-6"
         )
         return
 
-    for row in rows:
+    match_note = f"{shelf.total_matches} matches"
+    if shelf.total_matches > len(shelf.rows):
+        match_note += f" — showing first {len(shelf.rows)}"
+    ui.label(match_note).classes("text-caption text-grey-6")
+
+    for row in shelf.rows:
         _render_row(ctx, row)
-    if len(rows) >= _RESULT_LIMIT:
-        ui.label(f"Showing first {_RESULT_LIMIT} — refine the search.").classes(
-            "text-caption text-grey-6"
-        )
 
 
 def _render_row(ctx: Dict[str, Any], row) -> None:
@@ -189,7 +193,7 @@ def _render_row(ctx: Dict[str, Any], row) -> None:
 def _render_my_filters_manager(ctx: Dict[str, Any], owned) -> None:
     app_state = ctx["app_state"]
     data = ctx["data"]
-    manufacturers = sorted(set(data.filter_collection.df["Manufacturer"].astype(str)))
+    manufacturers = _manufacturer_names(data)
 
     ui.label("Manage by manufacturer").classes("text-caption text-grey-7")
     for m in manufacturers:

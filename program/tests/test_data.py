@@ -42,7 +42,7 @@ class FilterLoader(TestCase):
             self.assertClose(float(row[GRID == 300][0]), 0.5)   # 50/100
             self.assertClose(float(row[GRID == 500][0]), 0.25)
             self.assertClose(float(row[GRID == 800][0]), 0.075)  # interp
-            self.assertClose(float(row[GRID == 1100][0]), 0.0)   # beyond data -> 0
+            self.assertTrue(np.isnan(row[GRID == 1100][0]))  # beyond data -> unknown
 
     def test_metadata_and_hex_fallback_rules(self):
         with data_sandbox() as (root, folders):
@@ -82,7 +82,7 @@ class SensorProfileLoader(TestCase):
             self.assertIsNone(default_key)
             r = profiles["Brand M1"].channel_data["R"]
             self.assertClose(float(r[GRID == 400][0]), 0.5)  # 50/100
-            self.assertClose(float(r[GRID == 1100][0]), 0.0)  # beyond data -> 0
+            self.assertTrue(np.isnan(r[GRID == 1100][0]))  # beyond data -> unknown
 
     def test_default_qe_filename_sets_default_key(self):
         with data_sandbox() as (root, folders):
@@ -238,7 +238,7 @@ class IlluminantLoader(TestCase):
             illum, meta = data_mod.load_illuminant_collection()
             self.assertIn("D65", illum)
             self.assertClose(float(illum["D65"][GRID == 400][0]), 10.0)
-            self.assertClose(float(illum["D65"][GRID == 1100][0]), 0.0)
+            self.assertTrue(np.isnan(illum["D65"][GRID == 1100][0]))  # unknown
             self.assertEqual(meta, {"D65": "daylight"})
 
     def test_description_column_is_optional(self):

@@ -11,7 +11,7 @@ This guide walks you through using FS FilterLab for optical analysis.
 
 ### 2. Basic Interface Overview
 - **Left Sidebar (Drawer)**: Filter selection, QE/illuminant pickers, settings, and actions
-- **Main Content Area**: Interactive Plotly charts, metrics tables, reflector list
+- **Main Content Area**: transmission metrics, sensor response curves, Scene Preview swatches, and metrics tables — raw sensitivity & illuminant curves live in a collapsible section at the bottom
 - **Notifications**: Success/error toasts appear in the top-right corner
 
 ## Basic Workflow
@@ -40,6 +40,13 @@ This guide walks you through using FS FilterLab for optical analysis.
 
 ## Advanced Features
 
+### Scene Preview
+- The **Scene Preview** card sits below the Sensor response card: every selected surface gets one render swatch (name + reflectance sparkline) that follows the camera-look toggle
+- The **camera icon** on the card toggles the "camera look" (filmic tone curve + chroma boost, on by default); with a color-negative film profile the render is inverted like a print
+- **Click a swatch** to open its popover: the active render's linear R/G/B, WB-from-surface, and remove
+- **Partial data** badge: more than 10% of the chain's spectral weight lands on wavelengths without reflectance data (e.g. UV stacks over leaf data) — the popover lists the missing bands
+- No surfaces yet? Click **"Load default scene set"** to add the curated leaf set, or add reflectors from the Reflectors shelf
+
 ### Advanced Filter Search
 1. On the **Filters** shelf, open the **"Advanced search"** expansion
 2. **Manufacturers**: Select brands to narrow choices
@@ -59,11 +66,11 @@ This guide walks you through using FS FilterLab for optical analysis.
 
 ### White Balance from a Surface Reference
 1. Load a **Sensor / Film Profile** and an **Illuminant** (required for white balance)
-2. In the reflector list, click the **WB** button on a surface row to use it as the white balance reference — it shows **● WB** while active; click again to reset
+2. Click a **swatch** in the **Scene Preview** card and choose **WB** to use that surface as the white balance reference — it shows **● WB** while active; click again to reset
 3. The white balance panel shows **"(from surface reference)"** while active
 
 ### Custom Data Import
-1. Open the **Data** tab — five import cards, one per data type, plus a digitized-CSV fast path that parses pasted or uploaded data with inline metadata entry:
+1. Open the **Data** tab — five import cards, one per data type. Each card walks top-to-bottom: choose the CSV (staged, nothing saved yet), fill in the metadata, then click the **Import** button — it activates once a file is staged:
 2. **Filters**: Import custom TSV filter files
 3. **Illuminants**: Add custom light sources
 4. **Camera QE**: Add digital camera sensor profiles

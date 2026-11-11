@@ -11,7 +11,7 @@ import unittest
 
 import numpy as np
 
-from models.constants import DEFAULT_WB_GAINS
+from models.constants import DEFAULT_WB_GAINS, REPO_ROOT
 from services.state_manager import AppState
 from tests.helpers import (
     GRID,
@@ -175,6 +175,23 @@ class DefaultReflectorPersistence(TestCase):
             state.seed_isdefault_reflectors(collection)
             state.seed_isdefault_reflectors(collection)
             self.assertEqual(state.get_default_reflector_files(), ["leaf.tsv"])
+
+    def test_relative_and_absolute_forms_are_one_entry(self):
+        # Old JSON saves mixed path forms; matching must normalize both.
+        with state_sandbox():
+            state = AppState()
+            relative = "program/data/reflectors/plant/leaf.tsv"
+            state.add_to_default_reflectors(str(REPO_ROOT / relative))
+            state.add_to_default_reflectors(relative)  # same file, other form
+            self.assertEqual(state.get_default_reflector_files(), [relative])
+            self.assertTrue(
+                state.is_default_reflector(str(REPO_ROOT / relative)))
+            self.assertTrue(AppState().is_default_reflector(relative))
+
+
+class SceneLookToggle(TestCase):
+    def test_camera_look_is_on_by_default(self):
+        self.assertTrue(AppState().scene_look)
 
 
 class MutableDefaultSafety(TestCase):

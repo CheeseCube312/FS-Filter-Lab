@@ -1,4 +1,4 @@
-"""Transmission instrument panel (UX_SPEC.md §3.2.1).
+"""Transmission instrument panel.
 
 Renders the combined stack transmission chart + metrics row. The linear/
 stops scale is chart-local view state (page_state), passed into the
@@ -15,12 +15,13 @@ def render_transmission(ctx: Dict[str, Any]) -> None:
     app_state = ctx["app_state"]
     data = ctx["data"]
     page_state = ctx["page_state"]
+    log_stops = page_state["trans_log_stops"]
 
     with ui.row().classes("w-full items-center justify-between"):
         ui.label("Transmission").classes("text-h6")
         ui.toggle(
             {"linear": "Linear", "stops": "Stops"},
-            value="stops" if page_state.get("trans_log_stops") else "linear",
+            value="stops" if log_stops else "linear",
             on_change=lambda e: _set_scale(ctx, e.value),
         ).props("dense")
 
@@ -34,7 +35,7 @@ def render_transmission(ctx: Dict[str, Any]) -> None:
     vm = prepare_filter_analysis(
         app_state,
         data.filter_collection,
-        log_stops=page_state.get("trans_log_stops", False),
+        log_stops=log_stops,
     )
 
     metrics = vm.metrics

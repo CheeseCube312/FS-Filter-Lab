@@ -53,9 +53,8 @@ def effective_transmission(
     Current stack transmission on the interpolation grid (ones if empty).
 
     Single shared derivation of the live stack for the action layer and for
-    every presenter that needs transmission (surfaces, reflectors shelf,
-    film match), so presenters stay read-only instead of trusting a
-    render-time cache.
+    every presenter that needs transmission (surfaces, reflectors shelf),
+    so presenters stay read-only instead of trusting a render-time cache.
 
     Args:
         selected_filters: List of selected filter display names
@@ -206,7 +205,7 @@ def compute_reflector_color(
 
 
 # ============================================================================
-# EXPOSURE-REFERENCED SURFACE COLORS (UX_SPEC.md §7.1)
+# EXPOSURE-REFERENCED SURFACE COLORS
 # ============================================================================
 
 def compute_white_reference_color(
@@ -251,6 +250,32 @@ def reference_color_to_display(
     white = np.asarray(white_ref_rgb, dtype=float)
     safe_white = np.where(white > EPSILON, white, 1.0)
     return np.clip(surface / safe_white, 0.0, 1.0)
+
+
+# ============================================================================
+# CAMERA-LOOK RENDER MODE (filmic tone curve + chroma, pre-sRGB encoding)
+# ============================================================================
+
+# Chroma boost applied around Rec.709 luma before the tone curve.
+CAMERA_LOOK_CHROMA_BOOST = 1.15
+
+
+def apply_camera_look(linear_rgb: np.ndarray, invert: bool = False) -> np.ndarray:
+    """
+    "Camera look" render of a white-referenced linear color: optional
+    negative-film inversion (``1 - x`` for ``invert_for_display`` profiles),
+    a chroma boost around luma, then a smoothstep filmic S-curve per channel.
+
+    Post-ratio / pre-sRGB: input and output are linear RGB in [0, 1].  The
+    S-curve maps 0, 0.5 and 1 onto themselves, so neutrals keep their tone
+    while midtone contrast increases — the default-on Scene Preview look.
+    """
+    rgb = np.clip(np.asarray(linear_rgb, dtype=float), 0.0, 1.0)
+    if invert:
+        rgb = 1.0 - rgb
+    luma = float(np.dot(rgb, (0.2126, 0.7152, 0.0722)))
+    rgb = luma + (rgb - luma) * CAMERA_LOOK_CHROMA_BOOST
+    return np.clip(rgb * rgb * (3.0 - 2.0 * rgb), 0.0, 1.0)
 
 
 def srgb_encode(linear_rgb: np.ndarray) -> np.ndarray:
@@ -300,38 +325,47 @@ def _cmf_lobe(
     return np.exp(-((wavelengths - mu) ** 2) / (2.0 * sigma ** 2))
 
 
+# CIE-1931 XYZ -> linear sRGB conversion matrix (D65 reference white)
+_XYZ_TO_LINEAR_SRGB = np.array([
+    [3.2406255, -1.5372080, -0.4986286],
+    [-0.9689307, 1.8757561, 0.0415175],
+    [0.0557101, -0.2040211, 1.0569959],
+])
+
+
+def _cie1931_xyz(wavelengths: np.ndarray) -> np.ndarray:
+    """
+    Analytic CIE-1931 2-deg color matching functions at single wavelengths
+    (multi-lobe Gaussian fit; Wyman, Sloan & Shirley, JCGT 2013) as an
+    (..., 3) array of (X, Y, Z).
+    """
+    wl = np.asarray(wavelengths, dtype=float)
+    x_bar = (
+        1.056 * _cmf_lobe(wl, 599.8, 37.9, 31.0)
+        + 0.362 * _cmf_lobe(wl, 442.0, 16.0, 26.7)
+        - 0.065 * _cmf_lobe(wl, 501.1, 20.4, 26.2)
+    )
+    y_bar = (
+        0.821 * _cmf_lobe(wl, 568.8, 46.9, 40.5)
+        + 0.286 * _cmf_lobe(wl, 530.9, 16.3, 31.1)
+    )
+    z_bar = (
+        1.217 * _cmf_lobe(wl, 437.0, 11.8, 36.0)
+        + 0.681 * _cmf_lobe(wl, 459.0, 26.0, 13.8)
+    )
+    return np.stack([x_bar, y_bar, z_bar], axis=-1)
+
+
 def _spectral_to_linear_srgb(
     transmission: np.ndarray, wavelengths: np.ndarray
 ) -> np.ndarray:
     """
-    XYZ of a transmission curve under equal-energy white via analytic CIE-1931
-    2-deg color matching functions (multi-lobe Gaussian fit; Wyman, Sloan &
-    Shirley, JCGT 2013), converted to linear sRGB.  Unnormalized output.
+    XYZ of a transmission curve under equal-energy white via _cie1931_xyz,
+    converted to linear sRGB.  Unnormalized output.
     """
-    x_bar = (
-        1.056 * _cmf_lobe(wavelengths, 599.8, 37.9, 31.0)
-        + 0.362 * _cmf_lobe(wavelengths, 442.0, 16.0, 26.7)
-        - 0.065 * _cmf_lobe(wavelengths, 501.1, 20.4, 26.2)
-    )
-    y_bar = (
-        0.821 * _cmf_lobe(wavelengths, 568.8, 46.9, 40.5)
-        + 0.286 * _cmf_lobe(wavelengths, 530.9, 16.3, 31.1)
-    )
-    z_bar = (
-        1.217 * _cmf_lobe(wavelengths, 437.0, 11.8, 36.0)
-        + 0.681 * _cmf_lobe(wavelengths, 459.0, 26.0, 13.8)
-    )
-    xyz = np.array([
-        np.trapezoid(transmission * x_bar, wavelengths),
-        np.trapezoid(transmission * y_bar, wavelengths),
-        np.trapezoid(transmission * z_bar, wavelengths),
-    ])
-    xyz_to_linear_srgb = np.array([
-        [3.2406255, -1.5372080, -0.4986286],
-        [-0.9689307, 1.8757561, 0.0415175],
-        [0.0557101, -0.2040211, 1.0569959],
-    ])
-    return xyz_to_linear_srgb @ xyz
+    t = np.asarray(transmission, dtype=float)
+    xyz = np.trapezoid(t[:, np.newaxis] * _cie1931_xyz(wavelengths), wavelengths, axis=0)
+    return _XYZ_TO_LINEAR_SRGB @ xyz
 
 
 def filter_display_color(transmission: Optional[np.ndarray], hex_color: str = "") -> str:
@@ -363,3 +397,29 @@ def filter_display_color(transmission: Optional[np.ndarray], hex_color: str = ""
     if peak <= EPSILON:
         return DEFAULT_HEX_COLOR
     return srgb_to_hex(linear / peak)
+
+
+# ============================================================================
+# HUMAN-VISION SPECTRUM COLORS (single wavelengths → perceived color)
+# ============================================================================
+
+def spectral_locus_linear_srgb(wavelengths: np.ndarray) -> np.ndarray:
+    """
+    Linear sRGB color of individual wavelengths (same CIE-1931 2-deg observer
+    as _spectral_to_linear_srgb), out-of-gamut negatives clipped to 0.
+
+    Magnitude carries the observer's ȳ(λ).  For an explicit V(λ) brightness
+    profile, normalize the locus to its own peak first (hue/chroma), then
+    scale by photopic_relative_brightness.
+    """
+    return np.clip(_cie1931_xyz(wavelengths) @ _XYZ_TO_LINEAR_SRGB.T, 0.0, None)
+
+
+def photopic_relative_brightness(wavelengths: np.ndarray) -> np.ndarray:
+    """
+    Photopic brightness ȳ(λ) of the same fit, normalized to its maximum over
+    the passed range — pass the full visible band so 1.0 lands on the
+    brightest wavelength (~555 nm).
+    """
+    y_bar = _cie1931_xyz(wavelengths)[..., 1]
+    return y_bar / y_bar.max()

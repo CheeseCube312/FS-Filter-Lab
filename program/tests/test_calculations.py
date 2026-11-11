@@ -206,6 +206,35 @@ class ReflectorColors(TestCase):
         self.assertNanEqual(display, [0.0, 1.0, 1.0])
 
 
+class CameraLook(TestCase):
+    def test_neutral_grey_is_a_fixed_point(self):
+        out = calc.apply_camera_look(np.array([0.5, 0.5, 0.5]))
+        self.assertNanEqual(out, [0.5, 0.5, 0.5])
+
+    def test_smoothstep_tone_curve_hand_computed(self):
+        # Neutral triplet: the chroma stage is the identity, so the values
+        # isolate the per-channel smoothstep.
+        out = calc.apply_camera_look(np.array([0.25, 0.25, 0.25]))
+        self.assertClose(out[0], 0.15625)   # 0.25^2 * (3 - 0.5)
+        self.assertClose(out[1], 0.15625)
+        self.assertClose(out[2], 0.15625)
+
+    def test_negative_inversion_precedes_the_tone_curve(self):
+        out = calc.apply_camera_look(np.array([0.25, 0.25, 0.25]), invert=True)
+        self.assertClose(out[0], 0.84375)   # 1 - 0.25 = 0.75 goes in
+
+    def test_chroma_boost_widens_the_channel_spread(self):
+        rgb = np.array([0.6, 0.4, 0.4])
+        out = calc.apply_camera_look(rgb)
+        self.assertGreater(out[0] - out[2], rgb[0] - rgb[2])
+        self.assertClose(out[0], 0.682, places=3)
+        self.assertClose(out[2], 0.343, places=3)
+
+    def test_output_is_clamped_to_unit_range(self):
+        out = calc.apply_camera_look(np.array([2.0, -1.0, 0.5]))
+        self.assertTrue(((out >= 0.0) & (out <= 1.0)).all())
+
+
 class SrgbHelpers(TestCase):
     def test_encode_endpoints_exact(self):
         self.assertNanEqual(calc.srgb_encode(np.array([0.0, 1.0])),
@@ -257,6 +286,52 @@ class FilterDisplayColor(TestCase):
         uv_only = band(320, 340)  # all-zero across the visible band
         self.assertEqual(calc.filter_display_color(uv_only, ""),
                          DEFAULT_HEX_COLOR)
+
+
+class SpectralLocusColors(TestCase):
+    """CIE-1931 single-wavelength colors behind the human-vision strip."""
+
+    def test_locus_shape_is_n_by_3_and_never_negative(self):
+        rgb = calc.spectral_locus_linear_srgb(GRID)
+        self.assertEqual(rgb.shape, (len(GRID), 3))
+        self.assertTrue(np.all(rgb >= 0.0))  # out-of-gamut lobes clipped to 0
+
+    def test_locus_hues_follow_the_spectrum(self):
+        def at(nm):
+            return calc.spectral_locus_linear_srgb(np.array([float(nm)]))[0]
+        blue, green, red = at(460), at(532), at(610)
+        self.assertGreaterEqual(blue[2], blue[0])    # 460 nm: blue over red
+        self.assertGreaterEqual(blue[2], blue[1])
+        self.assertGreaterEqual(green[1], green[0])  # 532 nm: green dominant
+        self.assertGreaterEqual(green[1], green[2])
+        self.assertGreaterEqual(red[0], red[1])      # 610 nm: red dominant
+        self.assertGreaterEqual(red[0], red[2])
+
+    def test_locus_magnitude_falls_toward_the_spectrum_ends(self):
+        locus = calc.spectral_locus_linear_srgb(np.array([550.0, 650.0, 700.0]))
+        norms = np.linalg.norm(locus, axis=1)
+        self.assertGreater(norms[0], norms[1])  # 550 nm outshines 650 nm
+        self.assertGreater(norms[1], norms[2])  # 650 nm outshines 700 nm
+
+
+class PhotopicBrightness(TestCase):
+    """V(lambda) profile normalized over the passed (visible) range."""
+
+    def test_profile_peaks_at_one_near_555(self):
+        visible = GRID[(GRID >= 380) & (GRID <= 700)]
+        v = calc.photopic_relative_brightness(visible)
+        self.assertEqual(v.shape, visible.shape)
+        self.assertTrue(np.all(v >= 0.0))
+        self.assertClose(float(v.max()), 1.0)
+        peak_nm = visible[int(np.argmax(v))]
+        self.assertTrue(550 <= peak_nm <= 575,
+                        f"fit peak lands at {peak_nm} nm, expected near 555")
+
+    def test_mid_spectrum_dwarfs_the_deep_red_end(self):
+        v = calc.photopic_relative_brightness(np.array([550.0, 650.0, 700.0]))
+        self.assertGreater(v[0], 100 * v[2])  # 550 nm >> 700 nm
+        self.assertGreater(v[0], v[1])
+        self.assertGreater(v[1], v[2])
 
 
 if __name__ == "__main__":

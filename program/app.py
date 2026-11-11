@@ -4,7 +4,7 @@ FS FilterLab — Entry Point
 Launch with:  python program/app.py
    or from project root:  .venv/Scripts/python program/app.py
 
-Thin shell per UX_SPEC.md §6: data init, AppState init, page scaffolding.
+Thin entry point: data init, AppState init, page scaffolding.
 All feature logic lives in views/ + services/.
 """
 import logging
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 def _apply_startup_defaults(app_state: AppState, data) -> None:
-    """Preselect a sensor and illuminant so the first charts render (Mode A)."""
+    """Preselect a sensor and illuminant so the first charts render."""
     if app_state.active_profile is None:
         profiles = data.sensor_profiles
         if data.default_key in profiles:

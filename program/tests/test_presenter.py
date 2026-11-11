@@ -1,9 +1,8 @@
 """services.presenter — view models, the read-only guarantee, and search.
 
 Locks: render paths never mutate AppState (snapshot diff), the metrics/WB
-fallback messages, quick-search token AND-matching (regex-safe), advanced
-search criteria (AND, UI-percent scale) and sort orders, and the Film Match
-fallback notes.
+fallback messages, quick-search token AND-matching (regex-safe), and advanced
+search criteria (AND, UI-percent scale) and sort orders.
 """
 import unittest
 
@@ -11,16 +10,16 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from models.core import ReflectorCollection
+from models.core import ColorNegativeFilmProfile, ReflectorCollection
 from services.presenter import (
     QE_ILLUMINANT_REQUIRED_MSG,
     prepare_filter_analysis,
     prepare_filter_rows,
-    prepare_film_match,
+    prepare_header_status,
     prepare_reference,
     prepare_reflectors_shelf,
+    prepare_scene_preview,
     prepare_sensor_analysis,
-    prepare_surfaces,
     search_filters,
     search_reflectors,
 )
@@ -60,9 +59,6 @@ def rich_state(collection):
     state.active_profile = make_sensor(r=2.0, g=1.0, b=1.0)
     state.illuminant = flat(2.0)
     state.illuminant_name = "D65"
-    state.film_emulation_profile = make_bw()
-    state.film_emulation_filters = [display_name("ND3", "N2", "Foo")]
-    state.film_emulation_wb = True
     state.white_balance_gains = {"R": 2.0, "G": 1.0, "B": 1.0}
     state.wb_reference_surface = "leaf.tsv"
     state.selected_surfaces = ["leaf.tsv"]
@@ -94,43 +90,120 @@ class PresenterReadOnly(TestCase):
             prepare_filter_analysis(state, collection)
             prepare_sensor_analysis(state, data)
             prepare_reference(state, data)
-            prepare_film_match(state, data)
-            prepare_surfaces(state, data)
+            prepare_scene_preview(state, data)
             prepare_reflectors_shelf(state, data)
+            prepare_header_status(state, data)
             prepare_filter_rows(state, data, query="nd")
             search_filters(collection.df, collection.filter_matrix, state)
             after = snapshot_state(state)
             assert_state_unchanged(self, before, after)
 
 
-class SurfacesPresenter(TestCase):
-    def test_missing_sensor_or_illuminant_warns_with_no_chips(self):
+class ReflectorsShelfPresenter(TestCase):
+    def test_rows_carry_nan_honest_reflectance_sparklines(self):
+        # The sparkline plots the raw matrix row: real samples as 0.5, and a
+        # mid-spectrum NaN gap must survive as line breaks (never zero-filled).
+        with state_sandbox():
+            data = reflector_app_data(shelf_collection())
+            curve = flat(0.5)
+            curve[300:400] = np.nan
+            data.reflector_collection.reflector_matrix = np.asarray([curve])
+            vm = prepare_reflectors_shelf(AppState(), data)
+            self.assertEqual(vm.total_matches, 1)
+            self.assertEqual(len(vm.rows), 1)
+            y = vm.rows[0].sparkline.data[0].y
+            self.assertEqual(len(y), (len(curve) + 1) // 2)  # [::2] decimation
+            self.assertTrue(np.isnan(y[150:200]).all())      # gap stays a gap
+            self.assertTrue((y[:150] == 0.5).all())
+            self.assertTrue((y[200:] == 0.5).all())
+
+
+class ScenePreviewPresenter(TestCase):
+    def test_missing_sensor_or_illuminant_warns_with_no_swatches(self):
         with state_sandbox():
             state = AppState()  # no profile
-            vm = prepare_surfaces(state, reflector_app_data(shelf_collection()))
-            self.assertEqual(vm.chips, [])
+            vm = prepare_scene_preview(
+                state, reflector_app_data(shelf_collection()))
+            self.assertEqual(vm.swatches, [])
             self.assertEqual(vm.warning, QE_ILLUMINANT_REQUIRED_MSG)
             self.assertIsNone(vm.wb_source_name)
+            self.assertTrue(vm.look_on)  # camera look is default-on
 
-    def test_selected_surface_becomes_a_white_referenced_chip(self):
+    def test_selected_surface_becomes_a_render_swatch(self):
         # White referencing divides by the perfect-diffuser color behind the
         # same stack, so stack, sensor gains, and illuminant all cancel: a
-        # flat 50% reflector must render as linear (0.5, 0.5, 0.5).
+        # flat 50% reflector must render as linear (0.5, 0.5, 0.5) — the
+        # camera look fixes neutral midtones.
         with state_sandbox():
             state = AppState()
             state.active_profile = make_sensor(r=2.0, g=1.0, b=1.0)
             state.illuminant = flat(2.0)
             state.selected_surfaces = ["leaf.tsv"]
             state.wb_reference_surface = "leaf.tsv"
-            vm = prepare_surfaces(state, reflector_app_data(shelf_collection()))
-            self.assertEqual(len(vm.chips), 1)
-            chip = vm.chips[0]
-            self.assertEqual(chip.name, "Leaf")
-            self.assertEqual(chip.source_file, "leaf.tsv")
-            self.assertNanEqual(list(chip.linear_rgb), [0.5, 0.5, 0.5])
-            self.assertTrue(chip.is_wb_ref)
+            vm = prepare_scene_preview(
+                state, reflector_app_data(shelf_collection()))
+            self.assertEqual(len(vm.swatches), 1)
+            swatch = vm.swatches[0]
+            self.assertEqual(swatch.name, "Leaf")
+            self.assertEqual(swatch.source_file, "leaf.tsv")
+            self.assertNanEqual(list(swatch.display_linear), [0.5, 0.5, 0.5])
+            self.assertTrue(swatch.is_wb_ref)
             self.assertEqual(vm.wb_source_name, "Leaf")
-            self.assertRegex(chip.hex_display, r"^#[0-9a-fA-F]{6}$")
+            self.assertRegex(swatch.display_hex, r"^#[0-9a-fA-F]{6}$")
+            self.assertFalse(swatch.partial_data)
+
+    def test_camera_look_toggle_switches_the_swatch_render(self):
+        # 75% reflector: look OFF renders the plain white-referenced 0.75;
+        # look ON lifts it onto the filmic smoothstep value.
+        with state_sandbox():
+            state = AppState()
+            state.active_profile = make_sensor()
+            state.illuminant = flat(2.0)
+            state.selected_surfaces = ["leaf.tsv"]
+            data = reflector_app_data(shelf_collection())
+            data.reflector_collection.reflectors[0].values = flat(0.75)
+
+            state.scene_look = False
+            off = prepare_scene_preview(state, data).swatches[0]
+            self.assertNanEqual(list(off.display_linear), [0.75, 0.75, 0.75])
+
+            state.scene_look = True
+            on = prepare_scene_preview(state, data).swatches[0]
+            self.assertClose(on.display_linear[0], 0.75 ** 2 * (3 - 2 * 0.75))
+
+    def test_negative_film_inverts_under_the_camera_look(self):
+        with state_sandbox():
+            state = AppState()
+            state.active_profile = ColorNegativeFilmProfile(
+                manufacturer="F", name="Neg",
+                channel_data={"R": flat(1.0), "G": flat(1.0), "B": flat(1.0)})
+            state.illuminant = flat(2.0)
+            state.selected_surfaces = ["leaf.tsv"]
+            data = reflector_app_data(shelf_collection())
+            data.reflector_collection.reflectors[0].values = flat(0.75)
+            vm = prepare_scene_preview(state, data)
+            swatch = vm.swatches[0]
+            self.assertTrue(vm.inverts_for_display)
+            # 1 - 0.75 = 0.25 through the same tone curve.
+            self.assertClose(swatch.display_linear[0], 0.25 ** 2 * (3 - 2 * 0.25))
+
+    def test_partial_data_flagged_when_chain_weight_lands_on_gaps(self):
+        # No reflectance data below 400 nm (grid positions 0..99); with a
+        # full-grid chain, 100 of 801 weighted nanometers (~12.5%) fall in
+        # the gap -> flagged.
+        with state_sandbox():
+            state = AppState()
+            state.active_profile = make_sensor()
+            state.illuminant = flat(2.0)
+            state.selected_surfaces = ["leaf.tsv"]
+            data = reflector_app_data(shelf_collection())
+            curve = flat(0.5)
+            curve[:100] = np.nan
+            data.reflector_collection.reflectors[0].values = curve
+            vm = prepare_scene_preview(state, data)
+            swatch = vm.swatches[0]
+            self.assertTrue(swatch.partial_data)
+            self.assertIn("300–399 nm", swatch.coverage_note)
 
 
 class FilterAnalysisPresenter(TestCase):
@@ -203,8 +276,8 @@ class QuickSearch(TestCase):
         state = state or AppState()
         return prepare_filter_rows(state, make_app_data(collection), query=query)
 
-    def names(self, rows):
-        return [r.display_name for r in rows]
+    def names(self, result):
+        return [r.display_name for r in result.rows]
 
     def test_tokens_and_match_across_fields(self):
         # 'lee' hits the manufacturer, 'oklahoma' the name — both must match.
@@ -238,11 +311,54 @@ class QuickSearch(TestCase):
             state.selected_filters = [display_name("ND6", "N1", "Foo")]
             state.filter_multipliers = {display_name("ND6", "N1", "Foo"): 3}
             rows = prepare_filter_rows(state, make_app_data(shelf_collection()),
-                                       query="ND6")
+                                       query="ND6").rows
             self.assertEqual(len(rows), 1)
             self.assertTrue(rows[0].in_stack)
             self.assertEqual(rows[0].multiplier, 3)
             self.assertFalse(rows[0].is_owned)
+
+
+    def test_total_matches_counts_beyond_the_capped_rows(self):
+        # 'nd' matches ND6 + ND3; a small limit caps the rows, not the count.
+        vm = prepare_filter_rows(AppState(), make_app_data(shelf_collection()),
+                                 query="nd", limit=1)
+        self.assertEqual(len(vm.rows), 1)
+        self.assertEqual(vm.total_matches, 2)
+
+
+class HeaderStatusPresenter(TestCase):
+    def vm(self, state):
+        return prepare_header_status(state, make_app_data(shelf_collection()))
+
+    def test_empty_state_shows_placeholders(self):
+        self.assertEqual(
+            self.vm(AppState()).segments,
+            ["No receiver", "No illuminant", "Stack empty", "WB off"])
+
+    def test_full_state_reports_receiver_illuminant_and_stack(self):
+        state = AppState()
+        state.active_profile = make_sensor()
+        state.illuminant = flat(2.0)
+        state.illuminant_name = "D65"
+        state.selected_filters = [display_name("ND6", "N1", "Foo")]
+        segments = self.vm(state).segments
+        self.assertTrue(segments[0].startswith("Cam X"))
+        self.assertEqual(segments[1], "D65")
+        self.assertIn("1 filter ", segments[2])
+        self.assertIn("stops", segments[2])
+
+    def test_wb_surface_resolves_to_spectrum_name(self):
+        with state_sandbox():
+            state = AppState()
+            state.apply_white_balance = True
+            state.wb_reference_surface = "leaf.tsv"
+            status = prepare_header_status(state, reflector_app_data(shelf_collection()))
+            self.assertIn("WB: Leaf", status.segments)
+
+    def test_wb_standard_when_no_reference_surface_is_set(self):
+        state = AppState()
+        state.apply_white_balance = True
+        self.assertIn("WB: standard", self.vm(state).segments)
 
 
 class AdvancedSearch(TestCase):
@@ -328,54 +444,6 @@ class ReflectorSearch(TestCase):
         self.assertEqual(list(search_reflectors(df, [], [], ["Animal"])["Name"]),
                          ["B"])
         self.assertEqual(len(search_reflectors(df, [], [], [])), 2)
-
-
-class FilmMatchPresenter(TestCase):
-    def test_no_film_target_shows_pick_guidance(self):
-        with state_sandbox():
-            state = AppState()
-            vm = prepare_film_match(state, make_app_data(shelf_collection()))
-            self.assertIsNone(vm.overlay_fig)
-            self.assertEqual(vm.deviations, [])
-            self.assertIn("Pick a film target", vm.note)
-
-    def test_film_without_sensor_or_illuminant_requires_them(self):
-        with state_sandbox():
-            state = AppState()
-            state.film_emulation_profile = make_bw()
-            vm = prepare_film_match(state, make_app_data(shelf_collection()))
-            self.assertIn("sensor and an illuminant are required", vm.note)
-
-    def test_full_scene_builds_overlay_and_per_channel_deviations(self):
-        with state_sandbox():
-            collection = shelf_collection()
-            state = rich_state(collection)
-            vm = prepare_film_match(state, make_app_data(collection))
-            self.assertIsInstance(vm.overlay_fig, go.Figure)
-            self.assertEqual([d.channel for d in vm.deviations],
-                             ["R", "G", "B"])
-            first = vm.deviations[0]
-            self.assertTrue(first.peak_wavelength.endswith("nm"))
-            self.assertTrue(first.peak_ratio.startswith("×"))
-            self.assertTrue(first.rms_deviation.endswith("%"))
-
-    def test_deviation_metrics_are_scale_invariant(self):
-        # Deviations judge SHAPE: curves are peak-normalized first, so a pure
-        # scale change (white-balancing the film target divides it by its own
-        # gains) must not move peak_ratio or rms_deviation.
-        with state_sandbox():
-            collection = shelf_collection()
-            state = rich_state(collection)
-            with_wb = prepare_film_match(state, make_app_data(collection))
-            state.film_emulation_wb = False
-            without_wb = prepare_film_match(state, make_app_data(collection))
-            wb_by_ch = {d.channel: d for d in with_wb.deviations}
-            raw_by_ch = {d.channel: d for d in without_wb.deviations}
-            for ch in ("R", "G", "B"):
-                self.assertEqual(wb_by_ch[ch].peak_ratio,
-                                 raw_by_ch[ch].peak_ratio)
-                self.assertEqual(wb_by_ch[ch].rms_deviation,
-                                 raw_by_ch[ch].rms_deviation)
 
 
 if __name__ == "__main__":

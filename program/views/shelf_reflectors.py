@@ -1,4 +1,4 @@
-"""Reflectors shelf: library search, surface/WB actions."""
+"""Reflectors shelf: library search, spectrum sparklines, add-as-surface."""
 from typing import Any, Dict
 
 from nicegui import ui
@@ -33,14 +33,8 @@ def render_reflectors_shelf(ctx: Dict[str, Any]) -> None:
             _render_row(ctx, row)
 
     df = data.reflector_collection.df
-    full_orgs = (
-        sorted(set(df["Organization"].astype(str)))
-        if "Organization" in df.columns else []
-    )
-    full_targets = (
-        sorted(set(df["Target Type"].astype(str)))
-        if "Target Type" in df.columns else []
-    )
+    full_orgs = _column_values(df, "Organization")
+    full_targets = _column_values(df, "Target Type")
 
     ui.select(
         full_orgs, multiple=True, value=orgs_sel, label="Organization",
@@ -57,12 +51,21 @@ def render_reflectors_shelf(ctx: Dict[str, Any]) -> None:
 def _sync(target_list: list, value) -> None:
     target_list[:] = [str(v) for v in (value or [])]
 
+
+def _column_values(df, column) -> list:
+    """Distinct sorted values; [] when the stock TSV lacks the column."""
+    return sorted(set(df[column].astype(str))) if column in df.columns else []
+
+
 def _render_row(ctx: Dict[str, Any], row) -> None:
     with ui.row().classes("w-full items-center no-wrap q-py-xs"):
         ui.element("div").style(
             f"background: {row.preview_hex}; width: 18px; height: 18px; "
             "border: 1px solid #999; flex: none;"
         ).tooltip(f"Preview under current stack: {row.preview_hex}")
+        ui.plotly(row.sparkline).tooltip(
+            "Raw reflectance 300–1100 nm — line breaks mark no-data gaps"
+        )
         with ui.column().classes("col gap-0"):
             ui.label(row.name).classes("text-body2 ellipsis")
             ui.label(
@@ -73,17 +76,6 @@ def _render_row(ctx: Dict[str, Any], row) -> None:
             ui.icon("verified", color="teal").tooltip("Default reflector")
         if row.is_wb_ref:
             ui.badge("WB", color="positive")
-        ui.button(
-            icon="sync",
-            color="positive" if row.is_wb_ref else None,
-            on_click=lambda r=row: (
-                ctx["dispatch"]("reset_surface_wb") if r.is_wb_ref
-                else ctx["dispatch"]("wb_from_surface", {"source_file": r.source_file})
-            ),
-        ).props("flat dense round size=sm").tooltip(
-            "Active WB reference — click to reset"
-            if row.is_wb_ref else "White-balance on this surface"
-        )
         if row.is_surface:
             ui.button(
                 icon="check_circle", color="positive",

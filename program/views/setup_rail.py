@@ -1,4 +1,4 @@
-"""Setup rail: sensor / film / illuminant + stack editor (UX_SPEC.md §3.1)."""
+"""Setup rail: sensor / film / illuminant + stack editor."""
 from typing import Any, Dict
 
 from nicegui import ui
@@ -25,7 +25,7 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
     ).classes("w-full").props('clearable outlined dense')
 
     ui.select(
-        (["None"] + films) if films else ["None"],
+        ["None"] + films,
         value=(current if current_is_film else "None"),
         label="Film",
         on_change=lambda e: ctx["dispatch"]("select_film", {"name": e.value}),
@@ -43,7 +43,7 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
     if not app_state.selected_filters:
         ui.label("Stack is empty.").classes("text-body2 text-grey-6")
     else:
-        for name in list(app_state.selected_filters):
+        for name in app_state.selected_filters:
             _render_stack_row(ctx, name)
         ui.button(
             "Clear stack",
@@ -53,12 +53,11 @@ def render_setup_rail(ctx: Dict[str, Any]) -> None:
 
 
 def _render_stack_row(ctx: Dict[str, Any], name: str) -> None:
-    app_state = ctx["app_state"]
     with ui.row().classes("w-full items-center no-wrap q-py-xs"):
         ui.label(name).classes("text-body2 col ellipsis")
         ui.select(
             [1, 2, 3, 4, 5],
-            value=app_state.filter_multipliers.get(name, 1),
+            value=ctx["app_state"].filter_multipliers.get(name, 1),
             on_change=lambda e, n=name: ctx["dispatch"]("set_multiplier", {"name": n, "value": e.value}),
         ).classes("w-16").props("dense outlined")
         ui.button(

@@ -175,11 +175,11 @@ class IlluminantImport(TestCase):
             df = read_tsv(path)
             self.assertEqual(list(df.columns),
                              ["Wavelength (nm)", "Relative Power", "Description"])
-            self.assertEqual(len(df), 801)  # INTERP_GRID rows
+            self.assertEqual(len(df), 101)  # 400..500 only: no fabricated rows
             self.assertClose(float(df["Relative Power"].max()), 100.0)
-            at_300 = float(df.loc[df["Wavelength (nm)"] == 300,
+            at_400 = float(df.loc[df["Wavelength (nm)"] == 400,
                                   "Relative Power"].iloc[0])
-            self.assertClose(at_300, 0.0)  # zero-filled beyond the data
+            self.assertClose(at_400, 100.0)  # peak-normalised measured value
 
     def test_rejects_empty_description(self):
         with import_sandbox():
@@ -190,12 +190,12 @@ class IlluminantImport(TestCase):
 
 
 class QEImport(TestCase):
-    def test_six_column_xy_pairs_clamp_beyond_the_data(self):
-        # Camera QE clamps to edge values (zero_edges=False); film/illuminant
-        # zero-fill — this edge policy is the QE contract.
-        csv = ("350;60;350;30;350;10\n"
-               "400;80;400;50;400;20\n"
-               "600;40;600;25;600;8\n")
+    def test_six_column_xy_pairs_stay_unknown_beyond_the_data(self):
+        # No importer fabricates edge values: unmeasured wavelengths are
+        # dropped, and shorter channels keep blank cells between rows.
+        csv = ("350;60;350;30;400;10\n"
+               "400;80;400;50;450;20\n"
+               "600;40;600;25;500;8\n")
         with import_sandbox() as (root, folders, output):
             ok, msg = imp.import_qe_from_csv(csv_upload(csv), "Canon", "EOS R")
             self.assertTrue(ok, msg)
@@ -204,10 +204,16 @@ class QEImport(TestCase):
             df = read_tsv(path)
             self.assertEqual(list(df.columns),
                              ["Wavelength", "R", "G", "B", "Manufacturer", "Name"])
-            at_300 = float(df.loc[df["Wavelength"] == 300, "R"].iloc[0])
-            self.assertClose(at_300, 60.0)  # clamped to first data value
+            self.assertEqual(int(df["Wavelength"].min()), 350)  # first measured
+            self.assertEqual(int(df["Wavelength"].max()), 600)  # last measured
+            at_350 = float(df.loc[df["Wavelength"] == 350, "R"].iloc[0])
+            self.assertClose(at_350, 60.0)  # measured value, not an edge clamp
             at_400 = float(df.loc[df["Wavelength"] == 400, "R"].iloc[0])
             self.assertClose(at_400, 80.0)  # file keeps the 0-100 scale
+            b_at_350 = df.loc[df["Wavelength"] == 350, "B"].iloc[0]
+            self.assertTrue(pd.isna(b_at_350))  # B unmeasured here -> blank
+            b_at_400 = float(df.loc[df["Wavelength"] == 400, "B"].iloc[0])
+            self.assertClose(b_at_400, 10.0)
 
     def test_rejects_wrong_column_count(self):
         with import_sandbox():

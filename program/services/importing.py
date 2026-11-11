@@ -293,15 +293,15 @@ def _extrapolated_series(wavelengths, values, value_label, extrap_lower, extrap_
 
 
 def _resample_channel(wavelengths, values, value_label, cap_message_fn=None,
-                      zero_edges=True, normalize_peak=False,
+                      normalize_peak=False,
                       clamp_negatives=True, on_negative=None):
     """
     Shared illuminant/QE/film pipeline for one X-Y channel: trim to the
     shorter column, validate, optionally cap-check at 100, clamp negatives,
     sort by wavelength and resample onto INTERP_GRID (rounded to 3 decimals).
 
-    zero_edges=True fills beyond the data range with 0 (film/illuminant
-    behaviour); False clamps to the edge values (camera QE behaviour).
+    Wavelengths beyond the measured range stay NaN ("unknown") — writers
+    drop those rows, so no edge values are ever fabricated.
     normalize_peak=True rescales the resampled curve so its peak is 100
     (illuminants).
 
@@ -328,11 +328,11 @@ def _resample_channel(wavelengths, values, value_label, cap_message_fn=None,
     sort_idx = np.argsort(wavelengths)
     resampled = np.interp(
         INTERP_GRID, wavelengths[sort_idx], values[sort_idx],
-        left=0.0 if zero_edges else None, right=0.0 if zero_edges else None,
+        left=np.nan, right=np.nan,
     )
 
     if normalize_peak:
-        peak = resampled.max()
+        peak = np.nanmax(resampled)
         if peak > 0:
             return np.round((resampled / peak) * 100.0, 3)
         return resampled  # all-zero curve stays all-zero
@@ -454,12 +454,13 @@ def import_illuminant_from_csv(uploaded_file, description):
         on_negative=lambda m: logger.info(f"Clamped negative intensity values to 0 (min was {m:.3f})"),
     )
 
-    # Create output DataFrame
+    # Create output DataFrame; unmeasured wavelengths are dropped, not filled
     df_out = pd.DataFrame({
         "Wavelength (nm)": INTERP_GRID,
         "Relative Power": intensity_rel,
         "Description": description
     })
+    df_out = df_out[df_out["Relative Power"].notna()]
 
     # Save file
     filename = _sanitize_filename(f"illuminant_{description}") + ".tsv"
@@ -509,12 +510,9 @@ def import_qe_from_csv(uploaded_file, brand, model):
         if wl.size == 0 or qe.size == 0:
             return False, f"{channel} channel has empty wavelength or QE data."
 
-        # Note: QE clamps to the edge values beyond the data range
-        # (zero_edges=False), unlike film/illuminant which zero-fill.
         channels[channel] = _resample_channel(
             wl, qe, f"{channel} QE",
             cap_message_fn=lambda m, ch=channel: f"{ch} channel QE values seem too high (max: {m:.3f}). Expected 0-100%.",
-            zero_edges=False,
             on_negative=lambda m, ch=channel: logger.info(f"{ch} channel: Clamped negative QE values to 0 (min was {m:.3f})"),
         )
 
@@ -527,6 +525,9 @@ def import_qe_from_csv(uploaded_file, brand, model):
         'Manufacturer': brand,
         'Name': model
     })
+    # Keep only wavelengths where at least one channel was measured;
+    # shorter channels keep blank cells (unknown stays unknown)
+    output_df = output_df[output_df[['R', 'G', 'B']].notna().any(axis=1)]
 
     # Save file
     filename = f"{_sanitize_filename(brand)}_{_sanitize_filename(model)}_QE.tsv"
@@ -647,6 +648,9 @@ def import_film_from_csv(
 
     # --- Save file ---
     data_df = pd.DataFrame(channel_rows)
+    # Keep only wavelengths with measured data (unknown stays unknown)
+    value_cols = [c for c in data_df.columns if c != 'Wavelength']
+    data_df = data_df[data_df[value_cols].notna().any(axis=1)]
     filename = f"{_sanitize_filename(manufacturer)}_{_sanitize_filename(name)}_film.tsv"
     out_dir = Path(DATA_FOLDERS['film'])
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -731,8 +735,3 @@ def _save_reflectance_file(df, meta, extrap_lower, extrap_upper, data_type):
     # Save the file
     success, message = _safe_file_save(df, out_path, data_type)
     return success, message
-
-# ============================================================================
-# All import functions are defined above and can be imported individually
-# The UI import flows live in views/ (shelf_data.py, shelf_reflectors.py, actions.py).
-# ============================================================================

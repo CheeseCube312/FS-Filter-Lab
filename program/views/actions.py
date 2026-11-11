@@ -3,12 +3,13 @@ Action dispatcher for FS Filter Lab (view-layer orchestration).
 
 Every UI control dispatches a named action through ``handle_app_action``,
 which mutates AppState / calls services and returns the set of **dirty panel
-keys** the shell should refresh (UX_SPEC.md §5). No panel rebuilds another
-directly; the key ``"*"`` is reserved for full rebuilds (Reset, and
-data-invalidating imports — the Data shelf importers).
+keys** the shell should refresh. No panel rebuilds another directly; the
+key ``"*"`` is reserved for full rebuilds (Reset, and data-invalidating
+imports — the Data shelf importers).
 
-This module contains no NiceGUI layout code. The one sanctioned UI call is
-``ui.notify`` for user feedback.
+This module contains no NiceGUI layout code. The two sanctioned UI calls are
+``ui.notify`` for user feedback and ``ui.download`` to hand a generated
+report file to the browser — neither touches layout.
 """
 import io
 import logging
@@ -18,7 +19,7 @@ from typing import Any, Callable, Dict, Optional, Set
 import numpy as np
 from nicegui import ui
 
-from models.constants import FILM_TYPES
+from models.constants import DEFAULT_CRITERION, FILM_TYPES
 from models.core import AppData, ChannelMixerSettings
 from services.visualization import generate_application_report
 from services.data import (
@@ -40,12 +41,12 @@ from services.state_manager import AppState
 logger = logging.getLogger(__name__)
 
 # Panels that derive from the optical triple (stack x sensor/film x illuminant).
-# `setup` re-renders to show the new selection; `shelf_reflectors` previews run
-# the §7.1 color chain (transmission x QE x illuminant x WB gains), so they
-# react to the same inputs.
+# `setup` re-renders to show the new selection; `scene_preview` and the
+# reflectors shelf run the color chain (transmission x QE x illuminant x WB
+# gains), so they react to the same inputs.
 _OPTICAL = {
-    "setup", "transmission", "sensor_response", "surfaces", "film_match",
-    "shelf_reflectors",
+    "setup", "transmission", "sensor_response", "scene_preview",
+    "shelf_reflectors", "header_status",
 }
 
 # Panels that depend on the filter stack (transmission chains): _OPTICAL plus
@@ -105,11 +106,6 @@ def _select_sensor(app_state: AppState, data: AppData, payload: Dict) -> Set[str
     app_state.select_sensor(payload.get("name"), data.sensor_profiles)
     _refresh_white_balance(app_state, data)
     return _OPTICAL
-
-
-def _select_film(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    """Film select drives the same receiver slot (active_profile)."""
-    return _select_sensor(app_state, data, payload)
 
 
 def _select_illuminant(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
@@ -210,7 +206,7 @@ def _set_owned_only(app_state: AppState, data: AppData, payload: Dict) -> Set[st
 
 def _set_wb_enabled(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     app_state.apply_white_balance = bool(payload.get("value", False))
-    return {"sensor_response", "surfaces", "film_match"}
+    return {"sensor_response", "scene_preview", "header_status"}
 
 
 # ---------------------------------------------------------------------------
@@ -224,36 +220,32 @@ def _run_report(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     result = generate_application_report(
         app_state, data.filter_collection, app_state.selected_camera
     )
-    if result:
-        path = result.get("path") or result.get("name") or "output"
-        ui.notify(f"Report saved: {path}", type="positive")
+    if result and result.get("path"):
+        ui.download(result["path"])
+        ui.notify(f"Report downloaded: {result['name']}", type="positive")
     else:
         ui.notify("Report generation failed", type="negative")
     return set()
 
 
 def _reset_all(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    """Reset the analysis chain to defaults (UX_SPEC.md §5 ``reset_all``).
+    """Reset the analysis chain to defaults.
 
-    Scope: filter stack, white balance (gains + surface reference), channel
-    mixer (enabled state and gains), and the film-emulation target. Kept:
-    loaded data, My Filters, the surfaces selection and all display toggles —
-    Reset means "start a new analysis", not "wipe the app".
+    Scope: filter stack, white balance (gains + surface reference) and the
+    channel mixer (enabled state and gains). Kept: loaded data, My Filters,
+    the surfaces selection and all display toggles — Reset means "start a
+    new analysis", not "wipe the app".
     """
     app_state.selected_filters = []
     app_state.filter_multipliers = {}
     app_state.reset_white_balance()
     app_state.channel_mixer = ChannelMixerSettings()
-    app_state.film_emulation_profile = None
-    app_state.film_emulation_profile_name = None
-    app_state.film_emulation_wb = False
-    app_state.film_emulation_filters = []
     ui.notify("Reset to defaults", type="info")
     return {"*"}
 
 
 # ---------------------------------------------------------------------------
-# Advanced filter search (§3.3 Filters shelf)
+# Advanced filter search
 #
 # Field edits are staged in AppState and only reach the results list when
 # the user presses Apply (the shelf refreshes itself), so they return an
@@ -272,9 +264,7 @@ def _set_advanced_sort(app_state: AppState, data: AppData, payload: Dict) -> Set
 
 
 def _add_advanced_criterion(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    app_state.advanced_search_wavelength_criteria.append(
-        {"wavelength": 550, "trans_min": 0, "trans_max": 100}
-    )
+    app_state.advanced_search_wavelength_criteria.append(dict(DEFAULT_CRITERION))
     return {"shelf_filters"}
 
 
@@ -286,7 +276,7 @@ def _remove_advanced_criterion(app_state: AppState, data: AppData, payload: Dict
     return {"shelf_filters"}
 
 
-_CRITERION_FIELDS = ("wavelength", "trans_min", "trans_max")
+_CRITERION_FIELDS = tuple(DEFAULT_CRITERION)
 
 
 def _update_advanced_criterion(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
@@ -295,21 +285,20 @@ def _update_advanced_criterion(app_state: AppState, data: AppData, payload: Dict
     criteria = app_state.advanced_search_wavelength_criteria
     if field not in _CRITERION_FIELDS or not 0 <= index < len(criteria):
         return set()
-    default = {"wavelength": 550, "trans_min": 0, "trans_max": 100}[field]
-    criteria[index][field] = int(payload.get("value") or default)
+    criteria[index][field] = int(payload.get("value") or DEFAULT_CRITERION[field])
     return set()  # Staged: results update on Apply
 
 
 # ---------------------------------------------------------------------------
-# Surfaces instrument (UX_SPEC.md §7.1)
+# Surfaces instrument
 # ---------------------------------------------------------------------------
 
 def _add_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     src = payload.get("source_file")
     if src and src not in app_state.selected_surfaces:
         app_state.selected_surfaces.append(src)
-    # The reflectors shelf marks rows already on the surfaces grid.
-    return {"surfaces", "shelf_reflectors"}
+    # The reflectors shelf marks rows already on the scene preview.
+    return {"scene_preview", "shelf_reflectors"}
 
 
 def _remove_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
@@ -318,8 +307,8 @@ def _remove_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[st
         app_state.selected_surfaces.remove(src)
     if app_state.wb_reference_surface == src:
         app_state.reset_white_balance()
-        return {"surfaces", "sensor_response", "shelf_reflectors"}
-    return {"surfaces", "shelf_reflectors"}
+        return {"scene_preview", "sensor_response", "shelf_reflectors", "header_status"}
+    return {"scene_preview", "shelf_reflectors"}
 
 
 def _wb_from_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
@@ -340,44 +329,52 @@ def _wb_from_surface(app_state: AppState, data: AppData, payload: Dict) -> Set[s
     )
     # The shelf flags the WB-reference row, the sensor chart replots with the
     # new gains.
-    return {"surfaces", "sensor_response", "shelf_reflectors"}
+    return {"scene_preview", "sensor_response", "shelf_reflectors", "header_status"}
 
 
 def _reset_surface_wb(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     app_state.reset_white_balance()
-    return {"surfaces", "sensor_response", "shelf_reflectors"}
+    return {"scene_preview", "sensor_response", "shelf_reflectors", "header_status"}
 
 
-# ---------------------------------------------------------------------------
-# Film Match instrument (UX_SPEC.md §7.2)
-# ---------------------------------------------------------------------------
-
-# The film target renders as dashed overlay curves inside the sensor chart, so
-# every film-target change must dirty `sensor_response` too. Channel mixer
-# gains also feed the §7.1 color chain (surfaces chips, shelf previews).
-_FILM_MATCH = {"film_match", "sensor_response"}
-_MIXER = {"film_match", "sensor_response", "surfaces", "shelf_reflectors"}
+def _set_scene_look(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    """Toggle the Scene Preview's "camera look" render mode."""
+    app_state.scene_look = bool(payload.get("value", True))
+    return {"scene_preview", "shelf_reflectors"}
 
 
-def _select_film_target(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    app_state.select_film_emulation_target(payload.get("name"), data.sensor_profiles)
-    return _FILM_MATCH
+def _load_default_scene(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
+    """Add every curated default reflector found in the loaded library.
+
+    Matching goes through the normalized default list, so stale relative or
+    absolute JSON entries still resolve; files absent from the library are
+    skipped (they no longer exist on disk).
+    """
+    added = 0
+    for spectrum in data.reflector_collection.reflectors:
+        src = spectrum.metadata.get("source_file", "")
+        if (src and app_state.is_default_reflector(src)
+                and src not in app_state.selected_surfaces):
+            app_state.selected_surfaces.append(src)
+            added += 1
+    if added:
+        ui.notify(f"Added {added} default scene surfaces", type="positive")
+    else:
+        ui.notify("Default scene surfaces are already loaded", type="info")
+    return {"scene_preview", "shelf_reflectors"}
 
 
-def _set_film_wb(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    app_state.film_emulation_wb = bool(payload.get("value", False))
-    return _FILM_MATCH
-
-
-def _set_film_target_filters(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    app_state.film_emulation_filters = [str(v) for v in (payload.get("names") or [])]
-    return _FILM_MATCH
+# Channel mixer gains feed the color chain (sensor chart, scene preview
+# swatches, shelf previews), so mixer changes dirty the dependent panels too.
+_MIXER = {"sensor_response", "scene_preview", "shelf_reflectors"}
+# Gain edits refresh the sensor panel's nested chart region instead of the
+# panel itself: re-rendering the panel would destroy the mixer input being
+# typed into (focus loss, text reset after the first parseable keystroke).
+_MIXER_GAIN = (_MIXER - {"sensor_response"}) | {"sensor_response_chart"}
 
 
 def _set_mixer_enabled(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    mixer = app_state.channel_mixer
-    mixer.enabled = bool(payload.get("value", False))
-    app_state.channel_mixer = mixer
+    app_state.channel_mixer.enabled = bool(payload.get("value", False))
     return _MIXER
 
 
@@ -388,10 +385,8 @@ def _set_mixer_gain(app_state: AppState, data: AppData, payload: Dict) -> Set[st
         "blue_r", "blue_g", "blue_b",
     }:
         return set()
-    mixer = app_state.channel_mixer
-    setattr(mixer, field, float(payload.get("value") or 0.0))
-    app_state.channel_mixer = mixer
-    return _MIXER
+    setattr(app_state.channel_mixer, field, float(payload.get("value") or 0.0))
+    return _MIXER_GAIN
 
 
 def _reset_mixer(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
@@ -400,18 +395,18 @@ def _reset_mixer(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Data imports (UX_SPEC.md §3.3 Data shelf: all importers dispatch from here)
+# Data imports (Data shelf: all importers dispatch from here)
 # ---------------------------------------------------------------------------
 
 # Imports write new files into the cached data folders and add library
-# entries: rebuild everything (the sanctioned data-invalidating "*" case, §5).
+# entries: rebuild everything (the sanctioned data-invalidating "*" case).
 _IMPORT_OK = {"*"}
 # Rejected/failed import: only the Data shelf re-renders, to show the status.
 _IMPORT_FAILED = {"shelf_data"}
 
 
 def _record_import(app_state: AppState, card: str, ok: bool, message: str) -> None:
-    """Record an import outcome for the Data shelf status lines (§3.3)."""
+    """Record an import outcome for the Data shelf status lines."""
     app_state.last_import = {
         **app_state.last_import,
         card: {
@@ -430,20 +425,32 @@ def _reload_reflectors(state: AppState, data: AppData) -> None:
         state.seed_isdefault_reflectors(reloaded)
 
 
+def _require_meta(app_state: AppState, card: str, fields: Dict[str, str]) -> bool:
+    """Record + notify a failure and return False if any required field is empty."""
+    missing = [key for key, value in fields.items() if not value]
+    if not missing:
+        return True
+    message = f"Missing required metadata: {', '.join(missing)}"
+    _record_import(app_state, card, False, message)
+    ui.notify(message, type="warning")
+    return False
+
+
 def _run_csv_import(
     app_state: AppState,
     data: AppData,
     card: str,
-    content: bytes,
+    payload: Dict,
     run_import: Callable[[io.BytesIO], Any],
     reload_data: Optional[Callable[[AppState, AppData], None]] = None,
 ) -> Set[str]:
-    """Run the importer over *content*, reload the library on success.
+    """Run the importer over the staged CSV in *payload*, reload on success.
 
     CSV importers take a file-like object and return (ok, message). The ok
     path reloads library data via *reload_data* and returns the full-rebuild
     dirty set; any failure records the message for the shelf status line.
     """
+    content = payload.get("content") or b""
     if not content:
         _record_import(app_state, card, False, "No CSV file staged.")
         ui.notify("No CSV file staged", type="warning")
@@ -467,19 +474,13 @@ def _run_csv_import(
 
 def _import_filter_csv(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     meta = {
-        "manufacturer": str(payload.get("manufacturer") or "").strip(),
-        "filter_name": str(payload.get("filter_name") or "").strip(),
-        "filter_number": str(payload.get("filter_number") or "").strip(),
-        "hex_color": str(payload.get("hex_color") or "").strip(),
+        key: str(payload.get(key) or "").strip()
+        for key in ("manufacturer", "filter_name", "filter_number", "hex_color")
     }
-    missing = [key for key, value in meta.items() if not value]
-    if missing:
-        message = f"Missing required metadata: {', '.join(missing)}"
-        _record_import(app_state, "filter", False, message)
-        ui.notify(message, type="warning")
+    if not _require_meta(app_state, "filter", meta):
         return _IMPORT_FAILED
     return _run_csv_import(
-        app_state, data, "filter", payload.get("content") or b"",
+        app_state, data, "filter", payload,
         lambda fh: import_filter_from_csv(
             fh, meta,
             bool(payload.get("extrap_lower")), bool(payload.get("extrap_upper")),
@@ -490,84 +491,65 @@ def _import_filter_csv(app_state: AppState, data: AppData, payload: Dict) -> Set
 
 def _import_illuminant_csv(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     description = str(payload.get("description") or "").strip()
-    if not description:
-        _record_import(app_state, "illuminant", False, "Missing required metadata: description")
-        ui.notify("Illuminant description is required", type="warning")
+    if not _require_meta(app_state, "illuminant", {"description": description}):
         return _IMPORT_FAILED
 
     def reload(_state: AppState, d: AppData) -> None:
-        illuminants, metadata = load_illuminant_collection()
-        d.illuminants = illuminants
-        d.illuminant_metadata = metadata
+        d.illuminants, d.illuminant_metadata = load_illuminant_collection()
 
     return _run_csv_import(
-        app_state, data, "illuminant", payload.get("content") or b"",
+        app_state, data, "illuminant", payload,
         lambda fh: import_illuminant_from_csv(fh, description),
         reload,
     )
 
 
+def _reload_sensor_profiles(_state: AppState, data: AppData) -> None:
+    """Reload sensor/film profiles from disk after a successful import."""
+    data.sensor_profiles, data.default_key = load_sensor_profiles()
+
+
 def _import_qe_csv(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    brand = str(payload.get("brand") or "").strip()
-    model = str(payload.get("model") or "").strip()
-    missing = [key for key, value in (("brand", brand), ("model", model)) if not value]
-    if missing:
-        message = f"Missing required metadata: {', '.join(missing)}"
-        _record_import(app_state, "qe", False, message)
-        ui.notify(message, type="warning")
+    meta = {key: str(payload.get(key) or "").strip() for key in ("brand", "model")}
+    if not _require_meta(app_state, "qe", meta):
         return _IMPORT_FAILED
 
-    def reload(_state: AppState, d: AppData) -> None:
-        d.sensor_profiles, d.default_key = load_sensor_profiles()
-
     return _run_csv_import(
-        app_state, data, "qe", payload.get("content") or b"",
-        lambda fh: import_qe_from_csv(fh, brand, model),
-        reload,
+        app_state, data, "qe", payload,
+        lambda fh: import_qe_from_csv(fh, meta["brand"], meta["model"]),
+        _reload_sensor_profiles,
     )
 
 
 def _import_film_csv(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
-    manufacturer = str(payload.get("manufacturer") or "").strip()
-    name = str(payload.get("name") or "").strip()
-    film_type = str(payload.get("film_type") or "").strip()
-    missing = [
-        key for key, value in
-        (("manufacturer", manufacturer), ("name", name), ("film_type", film_type))
-        if not value
-    ]
-    if missing:
-        message = f"Missing required metadata: {', '.join(missing)}"
+    meta = {
+        key: str(payload.get(key) or "").strip()
+        for key in ("manufacturer", "name", "film_type")
+    }
+    if not _require_meta(app_state, "film", meta):
+        return _IMPORT_FAILED
+    if meta["film_type"] not in FILM_TYPES:
+        message = f"Invalid film type '{meta['film_type']}' (use color_negative, color_slide, or bw)"
         _record_import(app_state, "film", False, message)
         ui.notify(message, type="warning")
         return _IMPORT_FAILED
-    if film_type not in set(FILM_TYPES):
-        message = f"Invalid film type '{film_type}' (use color_negative, color_slide, or bw)"
-        _record_import(app_state, "film", False, message)
-        ui.notify(message, type="warning")
-        return _IMPORT_FAILED
-
-    def reload(_state: AppState, d: AppData) -> None:
-        d.sensor_profiles, d.default_key = load_sensor_profiles()
 
     return _run_csv_import(
-        app_state, data, "film", payload.get("content") or b"",
+        app_state, data, "film", payload,
         lambda fh: import_film_from_csv(
-            fh, manufacturer, name, film_type,
+            fh, meta["manufacturer"], meta["name"], meta["film_type"],
             iso=str(payload.get("iso") or ""),
             process=str(payload.get("process") or ""),
             notes=str(payload.get("notes") or ""),
             log_sensitivity=bool(payload.get("log_sensitivity", False)),
         ),
-        reload,
+        _reload_sensor_profiles,
     )
 
 
 def _import_spectrum_csv(app_state: AppState, data: AppData, payload: Dict) -> Set[str]:
     name = str(payload.get("name") or "").strip()
-    if not name:
-        _record_import(app_state, "spectrum", False, "Missing required metadata: name")
-        ui.notify("Surface name is required", type="warning")
+    if not _require_meta(app_state, "spectrum", {"name": name}):
         return _IMPORT_FAILED
     meta = {
         "name": name,
@@ -579,7 +561,7 @@ def _import_spectrum_csv(app_state: AppState, data: AppData, payload: Dict) -> S
     extrap_upper = bool(payload.get("extrap_upper"))
 
     return _run_csv_import(
-        app_state, data, "spectrum", payload.get("content") or b"",
+        app_state, data, "spectrum", payload,
         lambda fh: import_reflectance_absorption_from_csv(
             fh, meta, extrap_lower, extrap_upper
         ),
@@ -589,7 +571,8 @@ def _import_spectrum_csv(app_state: AppState, data: AppData, payload: Dict) -> S
 
 _HANDLERS = {
     "select_sensor": _select_sensor,
-    "select_film": _select_film,
+    # Film select drives the same receiver slot (active_profile).
+    "select_film": _select_sensor,
     "select_illuminant": _select_illuminant,
     "add_filter": _add_filter,
     "remove_filter": _remove_filter,
@@ -610,14 +593,13 @@ _HANDLERS = {
     "remove_surface": _remove_surface,
     "wb_from_surface": _wb_from_surface,
     "reset_surface_wb": _reset_surface_wb,
+    "load_default_scene": _load_default_scene,
+    "set_scene_look": _set_scene_look,
     "import_filter_csv": _import_filter_csv,
     "import_illuminant_csv": _import_illuminant_csv,
     "import_qe_csv": _import_qe_csv,
     "import_film_csv": _import_film_csv,
     "import_spectrum_csv": _import_spectrum_csv,
-    "select_film_target": _select_film_target,
-    "set_film_wb": _set_film_wb,
-    "set_film_target_filters": _set_film_target_filters,
     "set_mixer_enabled": _set_mixer_enabled,
     "set_mixer_gain": _set_mixer_gain,
     "reset_mixer": _reset_mixer,

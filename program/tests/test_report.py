@@ -79,6 +79,7 @@ class ApplicationReport(TestCase):
             written = reports / "Cam X" / "D65" / result["name"]
             self.assertTrue(written.exists(), f"missing {written}")
             self.assertEqual(written.read_bytes(), result["bytes"])
+            self.assertEqual(Path(result["path"]).read_bytes(), result["bytes"])
             self.assertTrue(result["name"].endswith(".png"))
 
     def test_report_renders_with_white_balance_applied(self):

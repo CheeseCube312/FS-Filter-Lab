@@ -22,18 +22,39 @@ from models.core import ChannelMixerSettings, FilterCollection, SensorProfile
 from models.constants import (
     CHART_HEIGHTS, CHART_LINE_STYLES, CHART_COLORS, EPSILON, GRID_HEIGHT_RATIOS,
     INTERP_GRID, MPL_STYLE_CONFIG, OUTPUT_FOLDERS, REPORT_CONFIG,
-    SENSOR_RESPONSE_DEFAULTS, SENSOR_TYPE_LABELS
+    SENSOR_RESPONSE_DEFAULTS, SENSOR_TYPE_LABELS, SPECTRUM_STRIP,
+    VISIBLE_MAX_NM, VISIBLE_MIN_NM,
 )
 from services.calculations import (
     compute_filter_transmission,
     compute_selected_filter_indices,
     compute_effective_stops,
+    photopic_relative_brightness,
+    spectral_locus_linear_srgb,
+    srgb_encode,
 )
 from services.spectra import apply_channel_mixing_to_responses
 from services.state_manager import AppState
 
+logger = logging.getLogger(__name__)
 
-def _invert_negative(responses: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+
+def _peak_of_curves(responses: Dict[str, np.ndarray]) -> float:
+    """Highest finite value across all curves, floored at 1.0."""
+    peak = 1.0
+    for curve in responses.values():
+        if curve is None or len(curve) == 0:
+            continue
+        clean = np.nan_to_num(curve, nan=0.0, posinf=0.0, neginf=0.0)
+        m = float(np.max(clean))
+        if np.isfinite(m) and m > peak:
+            peak = m
+    return peak
+
+
+def _invert_negative(
+    responses: Dict[str, np.ndarray]
+) -> Dict[str, np.ndarray]:
     """
     Colour-negative film: flip the latent image for display.
 
@@ -41,11 +62,7 @@ def _invert_negative(responses: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     applies a peak-relative inversion (peak - response) to render a positive.
     Peak-relative rather than absolute so it works at any display scale.
     """
-    max_val = max(
-        (np.nanmax(curve) for curve in responses.values() if len(curve) > 0),
-        default=1.0
-    )
-    max_val = max_val if max_val > 0 else 1.0
+    max_val = _peak_of_curves(responses)
     return {channel: max_val - curve for channel, curve in responses.items()}
 
 
@@ -158,40 +175,6 @@ def _calculate_spectral_colors(
     return np.clip(rgb_final, 0.0, 1.0)
 
 
-def prepare_rgb_for_display(
-    rgb_values: np.ndarray,
-    saturation_level: float = 1.0,
-    auto_exposure: bool = True
-) -> np.ndarray:
-    """Normalize RGB for display, mimicking per-channel sensor saturation."""
-    # Handle negative values by clamping to zero (like real sensors)
-    rgb_clamped = np.maximum(rgb_values, 0.0)
-    
-    if auto_exposure:
-        # Auto-exposure: scale to use full dynamic range without clipping
-        # Find the maximum value that would cause any channel to saturate
-        max_val = np.max(rgb_clamped)
-        if max_val > 0:
-            # Scale so the brightest pixel reaches saturation_level
-            exposure_scale = saturation_level / max_val
-            rgb_exposed = rgb_clamped * exposure_scale
-        else:
-            rgb_exposed = rgb_clamped
-    else:
-        rgb_exposed = rgb_clamped
-    
-    # Apply sensor saturation: each channel clips independently
-    rgb_saturated = np.minimum(rgb_exposed, saturation_level)
-    
-    # Final normalization for display (0-1 range)
-    if saturation_level > 0:
-        rgb_normalized = rgb_saturated / saturation_level
-    else:
-        rgb_normalized = np.zeros_like(rgb_saturated)
-    
-    return np.clip(rgb_normalized, 0.0, 1.0)
-
-
 # =============================================================================
 # PLOTLY VISUALIZATION
 # =============================================================================
@@ -275,8 +258,8 @@ def _add_spectrum_strip_to_plot(
         ),
         text=hover_texts,
         hoverinfo='text',
-        showlegend=False,
-        name='Spectrum'
+        showlegend=True,
+        name='This camera'
     ))
 
 
@@ -298,27 +281,97 @@ def _add_response_spectrum_strip(
     max_brightness = np.max(brightness) if np.max(brightness) > 0 else 1.0
     relative_brightness = brightness / max_brightness
 
-    # Find the maximum response for positioning the strip
-    max_response = 1.0
-    for response in responses.values():
-        if response is not None and len(response) > 0:
-            clean = np.nan_to_num(response, nan=0.0, posinf=0.0, neginf=0.0)
-            peak = np.max(clean)
-            if np.isfinite(peak) and peak > max_response:
-                max_response = peak
-
+    max_response = _peak_of_curves(responses)
     spectrum_y_pos = max_response * SENSOR_RESPONSE_DEFAULTS['spectrum_strip_position_pct']
     _add_spectrum_strip_to_plot(fig, interp_grid, rgb_matrix, relative_brightness, spectrum_y_pos)
 
 
+def _human_vision_strip_colors(interp_grid: np.ndarray) -> Tuple[List[str], List[str]]:
+    """
+    Per-wavelength (color, hover) pairs for the human-vision spectrum strip.
+
+    The strip is a hue legend: visible wavelengths get the CIE-1931 2-deg
+    spectral locus normalized per wavelength (strongest channel at full
+    scale, R:G:B ratios preserved) so every core hue stays readable for
+    identifying what a stack blocks.  The edges of the visible band taper
+    linearly to black over SPECTRUM_STRIP['edge_taper_nm'], marking where
+    human vision fades out (and where the CIE fit is least reliable).
+    Photopic V(lambda) is not applied to the pixels — its true value stays
+    in the hover text instead.  The strip covers only the visible band:
+    UV and IR get empty entries (not drawn) — with no human-visible color
+    to show, the legend simply fades out at the band edges.
+    """
+    colors = [''] * len(interp_grid)
+    hovers = [''] * len(interp_grid)
+    visible_idx = np.flatnonzero(
+        (interp_grid >= VISIBLE_MIN_NM) & (interp_grid <= VISIBLE_MAX_NM))
+
+    if len(visible_idx):
+        vis_wl = interp_grid[visible_idx]
+        locus = spectral_locus_linear_srgb(vis_wl)
+        # Per-wavelength chroma: divide each row by its own peak channel, not
+        # a global peak, so core hues all read at full scale.
+        row_peak = np.maximum(locus.max(axis=1, keepdims=True), EPSILON)
+        hue = np.clip(locus / row_peak, 0.0, 1.0)
+        # Edges of vision taper to dark: linear fade at each band end.
+        taper_nm = SPECTRUM_STRIP['edge_taper_nm']
+        taper = np.clip(np.minimum(
+            (vis_wl - VISIBLE_MIN_NM) / taper_nm,
+            (VISIBLE_MAX_NM - vis_wl) / taper_nm), 0.0, 1.0)
+        encoded = srgb_encode(np.clip(hue * taper[:, np.newaxis], 0.0, 1.0))
+        v_lambda = photopic_relative_brightness(vis_wl)
+        for k, idx in enumerate(visible_idx):
+            colors[idx] = 'rgb({},{},{})'.format(
+                *(int(round(c * 255)) for c in encoded[k]))
+            hovers[idx] = (f"{interp_grid[idx]} nm · human vision · "
+                           f"{v_lambda[k] * 100:.1f}% brightness")
+
+    return colors, hovers
+
+
+def _add_human_spectrum_strip(
+    fig: go.Figure,
+    interp_grid: np.ndarray,
+    y_position: float,
+) -> None:
+    """
+    Human-vision hue reference band at *y_position*: one square marker per
+    nanometre of the visible band, colored by its perceived hue; the band's
+    edges taper to dark and true photopic brightness stays in the hover
+    text.  UV / IR are not drawn — outside human vision, so the strip just
+    ends.
+    """
+    visible = (interp_grid >= VISIBLE_MIN_NM) & (interp_grid <= VISIBLE_MAX_NM)
+    grid = interp_grid[visible]
+    colors, hovers = _human_vision_strip_colors(grid)
+    fig.add_trace(go.Scatter(
+        x=grid,
+        y=[y_position] * len(grid),
+        mode='markers',
+        marker=dict(
+            size=SPECTRUM_STRIP['marker_size'],
+            color=colors,
+            line=dict(width=0),
+            symbol='square',
+        ),
+        text=hovers,
+        hoverinfo='text',
+        showlegend=True,
+        name='Human vision',
+    ))
+
+
 def _update_response_plot_layout(
     fig: go.Figure,
-    has_spectrum_strip: bool,
     is_white_balanced: bool,
     is_channel_mixed: bool,
     profile: Optional['SensorProfile'] = None,
 ) -> None:
-    """Set sensor-response plot title (WB/mixer status, film label) and height."""
+    """Set sensor-response plot title (WB/mixer status, film label) and height.
+
+    The human-vision strip is always drawn, so the taller spectrum layout is
+    always used.
+    """
     wb_status = " (White Balanced)" if is_white_balanced else ""
     mixer_status = " (Channel Mixed)" if is_channel_mixed else ""
 
@@ -328,8 +381,9 @@ def _update_response_plot_layout(
     else:
         title = f"Sensor Response{wb_status}{mixer_status}"
 
-    plot_height = CHART_HEIGHTS['plot_with_spectrum'] if has_spectrum_strip else CHART_HEIGHTS['standard_plot']
-    _apply_plotly_default_style(fig, title, y_title="Response (%)", height=plot_height)
+    _apply_plotly_default_style(
+        fig, title, y_title="Response (%)",
+        height=CHART_HEIGHTS['plot_with_spectrum'])
 
 
 def create_filter_response_plot(
@@ -344,6 +398,7 @@ def create_filter_response_plot(
 ) -> go.Figure:
     """Create a plotly figure showing filter response curves."""
     fig = go.Figure()
+    displayed_curves: List[np.ndarray] = []
     
     # Add individual filter curves
     for filter_index in selected_indices:
@@ -355,11 +410,13 @@ def create_filter_response_plot(
         # Convert to log scale or percentage scale for display
         y_data = -np.log2(np.maximum(transmission, 1e-6)) if log_stops else transmission * 100
         
+        displayed_curves.append(y_data)
         _add_filter_curve_to_plotly(fig, interp_grid, y_data, mask, name, color)
     
     # Add combined transmission if available
     if combined is not None:
         y_data = -np.log2(np.maximum(combined, 1e-6)) if log_stops else combined * 100
+        displayed_curves.append(y_data)
         fig.add_trace(go.Scatter(
             x=interp_grid,
             y=y_data,
@@ -369,9 +426,17 @@ def create_filter_response_plot(
             showlegend=True
         ))
     
-    # Update layout
+    # Update layout (taller: the human-vision strip needs headroom above the curves)
     y_title = 'Transmission (stops)' if log_stops else 'Transmission (%)'
-    fig = _apply_plotly_default_style(fig, "Filter Response", y_title=y_title)
+    fig = _apply_plotly_default_style(
+        fig, "Filter Response", y_title=y_title,
+        height=CHART_HEIGHTS['plot_with_spectrum'])
+
+    # Human-vision reference strip above the curves: perceived hue per
+    # wavelength (CIE-1931 observer; visible band only, edges taper to black)
+    strip_peak = _peak_of_curves(dict(enumerate(displayed_curves)))
+    _add_human_spectrum_strip(
+        fig, interp_grid, strip_peak * SPECTRUM_STRIP['solo_position_pct'])
     
     # Invert y-axis for log view (high transmission = low stops = bottom of plot)
     if log_stops:
@@ -389,9 +454,6 @@ def create_sensor_response_plot(
     apply_white_balance: bool,
     channel_mixer: Optional[ChannelMixerSettings] = None,
     sensor_profile: Optional['SensorProfile'] = None,
-    film_emulation_channels: Optional[Dict[str, np.ndarray]] = None,
-    film_emulation_label: str = "Film Target",
-    film_emulation_is_bw: bool = False,
 ) -> go.Figure:
     """Create a plotly figure showing sensor/film response with optional channel mixing."""
     fig = go.Figure()
@@ -433,54 +495,21 @@ def create_sensor_response_plot(
                 showlegend=True,
             ))
 
-    # Add spectrum strip if we have full RGB data (skip for B&W)
+    # Camera-capture strip if we have full RGB data (skip for B&W)
     has_rgb = not is_bw and all(ch in responses for ch in ('R', 'G', 'B'))
     if has_rgb:
         _add_response_spectrum_strip(fig, interp_grid, responses)
 
-    # Film emulation target overlay — dashed, desaturated, independently scaled
-    if film_emulation_channels:
-        # Find peak of primary sensor traces for shared y-scale reference
-        primary_peak = max(
-            (np.nanmax(r) for r in responses.values() if len(r) > 0),
-            default=1.0
-        ) or 1.0
-
-        if film_emulation_is_bw:
-            lum = next(iter(film_emulation_channels.values()))
-            film_peak = np.nanmax(lum) if len(lum) > 0 else 1.0
-            scale = primary_peak / film_peak if film_peak > 0 else 1.0
-            fig.add_trace(go.Scatter(
-                x=interp_grid,
-                y=lum * scale,
-                mode='lines',
-                name=f'{film_emulation_label} — Lum',
-                line={'color': '#888888', 'width': 1.5},
-                opacity=0.55,
-                showlegend=True,
-            ))
-        else:
-            # Desaturated versions of the standard RGB colors
-            _DESATURATED = {'R': '#d87f7f', 'G': '#7faf7f', 'B': '#7f9fd8'}
-            film_peak = max(
-                (np.nanmax(v) for v in film_emulation_channels.values() if len(v) > 0),
-                default=1.0
-            ) or 1.0
-            scale = primary_peak / film_peak
-            for ch, vals in film_emulation_channels.items():
-                fig.add_trace(go.Scatter(
-                    x=interp_grid,
-                    y=vals * scale,
-                    mode='lines',
-                    name=f'{film_emulation_label} — {ch}',
-                    line={'color': _DESATURATED.get(ch, '#aaaaaa'), 'width': 1.5},
-                    opacity=0.55,
-                    showlegend=True,
-                ))
+    # Human-vision reference strip stacked above the camera strip: perceived
+    # hue per wavelength, for direct capture comparison
+    peak_response = _peak_of_curves(responses)
+    _add_human_spectrum_strip(
+        fig, interp_grid,
+        peak_response * SENSOR_RESPONSE_DEFAULTS['human_strip_position_pct'],
+    )
 
     _update_response_plot_layout(
         fig,
-        has_rgb,
         apply_white_balance,
         channel_mixer and channel_mixer.enabled,
         profile=sensor_profile,
@@ -534,8 +563,6 @@ def create_illuminant_figure(
         height=height
     )
 
-
-logger = logging.getLogger(__name__)
 
 def sanitize_filename_component(name: str, lowercase=False, max_len=None) -> str:
     """
@@ -655,11 +682,13 @@ def _add_sensor_response_section(ax4, current_qe: Dict[str, np.ndarray], wb: Dic
         qe = current_qe.get(ch)
         if qe is None:
             continue
-        resp = np.nan_to_num(active_trans * qe) * 100
+        # Unmeasured wavelengths stay NaN: the plot shows gaps, never zeros
+        resp = active_trans * qe * 100
         if apply_white_balance:
             resp = resp / max(wb.get(ch, 1.0), EPSILON)
         ax4.plot(interp_grid, resp, label=f"{ch} Channel", lw=REPORT_CONFIG['channel_line_width'], color=COLOR_MAP[ch])
-        maxresp = max(maxresp, np.nanmax(resp))
+        if np.isfinite(resp).any():
+            maxresp = max(maxresp, np.nanmax(resp))
         stack[ch] = resp
 
     # Spectrum strip
@@ -668,7 +697,8 @@ def _add_sensor_response_section(ax4, current_qe: Dict[str, np.ndarray], wb: Dic
         stack.get('G', np.zeros_like(active_trans)),
         stack.get('B', np.zeros_like(active_trans))
     ], axis=1)
-    mv = np.nanmax(rgb_matrix)
+    finite = rgb_matrix[np.isfinite(rgb_matrix)]
+    mv = finite.max() if finite.size else 0.0
     if mv > 0:
         rgb_matrix /= mv
     
@@ -686,7 +716,7 @@ def _add_sensor_response_section(ax4, current_qe: Dict[str, np.ndarray], wb: Dic
     ax4.legend(loc='upper right', fontsize=REPORT_CONFIG['font_sizes']['legend'], bbox_to_anchor=(1.0, 0.95))
 
 
-def setup_matplotlib_style():
+def _setup_matplotlib_style():
     """Configure matplotlib: best-available seaborn grid style + custom config."""
     # Try different seaborn style variants in order of preference
     style_options = ["seaborn-v0_8-whitegrid", "seaborn-whitegrid", "whitegrid", "default"]
@@ -702,7 +732,7 @@ def setup_matplotlib_style():
     plt.rcParams.update(MPL_STYLE_CONFIG)
 
 
-def add_filter_curve_to_matplotlib(ax, x, y, mask, label, color):
+def _add_filter_curve_to_matplotlib(ax, x, y, mask, label, color):
     """Add a filter transmission curve (plus dashed extrapolation) to matplotlib axes."""
     mpl_width = CHART_LINE_STYLES['matplotlib']['width']
     extrap = CHART_LINE_STYLES['extrapolated']
@@ -752,7 +782,7 @@ def generate_report_png(
     )
 
     # Create figure with layout
-    setup_matplotlib_style()
+    _setup_matplotlib_style()
     fig = plt.figure(figsize=REPORT_CONFIG['figure_size'], dpi=REPORT_CONFIG['dpi'], constrained_layout=False)
     gs = GridSpec(5, 1, figure=fig, height_ratios=GRID_HEIGHT_RATIOS)
 
@@ -765,7 +795,7 @@ def generate_report_png(
     _add_transmission_plot_section(
         fig.add_subplot(gs[2]), selected_indices, filter_df,
         filter_matrix, masks,
-        add_filter_curve_to_matplotlib, interp_grid, active_transmission
+        _add_filter_curve_to_matplotlib, interp_grid, active_transmission
     )
     _add_white_balance_section(fig.add_subplot(gs[3]), white_balance_gains)
     _add_sensor_response_section(
@@ -800,7 +830,7 @@ def generate_report_png(
         f.write(png_bytes)
 
     logger.info("Report generated: %s", fname)
-    return {'bytes': png_bytes, 'name': fname}
+    return {'bytes': png_bytes, 'name': fname, 'path': os.path.join(output_dir, fname)}
 
 
 def generate_application_report(

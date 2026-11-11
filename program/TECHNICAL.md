@@ -22,13 +22,13 @@ views/       # NiceGUI UI components (zero computation — render view models on
   - setup_rail.py       # Setup rail controls
   - shelf_data.py       # Data shelf + per-card CSV import expansions
   - shelf_filters.py    # Filters shelf: quick/advanced search, sparkline cards, My Filters
-  - shelf_reflectors.py # Reflectors shelf: library search, surface actions
+  - shelf_reflectors.py # Reflectors shelf: library search, spectrum sparklines, add-as-surface actions
   - actions.py          # Imperative action handlers (imports, report generation)
   - film_match.py       # Film Match feature view
   - sensor_response.py  # Sensor response view
   - transmission.py     # Transmission metrics view
-  - surfaces.py         # Surface/reflector view
-  - reference.py        # White-balance reference view
+  - scene_preview.py    # Scene Preview card: render swatches, camera-look toggle
+  - reference.py        # Raw QE / illuminant lookup view (collapsed fold-out)
 tests/       # unittest suite (calculations, data, importing, presenter, spectra, state, report)
 data/        # Spectral data files (TSV format)
   - filters_data/     # Filter transmissions (+ my_filters.json)
@@ -80,15 +80,16 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 ### Presenter / View-Model Pattern
 `services/presenter.py` is framework-agnostic and bridges business logic and UI:
 
-- Computes everything a view needs (charts, metrics, messages) and bundles it in typed view-model dataclasses: `FilterAnalysisVM`, `SensorAnalysisVM`, `TransmissionMetricsVM`, `WhiteBalanceVM`
+- Computes everything a view needs (charts, metrics, messages) and bundles it in typed view-model dataclasses: `FilterAnalysisVM`, `SensorAnalysisVM`, `TransmissionMetricsVM`, `WhiteBalanceVM`, `ScenePreviewVM`/`SceneSwatchVM`
 - Views in `views/` contain **zero computation** — they render view models and dispatch user input
 - Imperative actions (report generation) are handled by `views/actions.py`, which calls services directly (`services.visualization` for PNG reports, `services.importing` for staged imports)
 
 ### Feature Map
 - **Advanced Filter Search**: manufacturer/hex-color/wavelength-transmission criteria with live sparkline previews (`views/shelf_filters.py`; compute in `presenter.search_filters`, previews via `presenter._create_filter_sparkline`)
-- **Advanced Reflector Search**: filter by organization or target type — only bites on reflector metadata, which the stock plant TSVs don't carry (`views/shelf_reflectors.py`; compute in `presenter.search_reflectors`)
+- **Advanced Reflector Search**: filter by organization or target type — only bites on reflector metadata, which the stock plant TSVs don't carry (`views/shelf_reflectors.py`; compute in `presenter.search_reflectors`, previews via `presenter._create_reflector_sparkline`)
+- **Scene Preview**: card below the Sensor response card with one render swatch per surface, following the camera-look toggle (filmic tone curve + chroma boost, default on; negative film is inverted). Each swatch carries a reflectance sparkline and a partial-data flag when >10% of the chain's spectral weight (`SCENE_COVERAGE_LIMIT`) lands on wavelengths without reflectance data; the popover shows the active render's linear R/G/B. WB + remove live in the swatch popover (`views/scene_preview.py`; compute in `presenter.prepare_scene_preview`, look via `calculations.apply_camera_look`)
 - **My Filters Manager**: curate owned filters, persisted to `data/filters_data/my_filters.json`, with a "My Filters only" sidebar toggle
-- **White Balance from Surface Reference**: pick any loaded reflector as WB source; gains recompute against it (`AppState.recompute_white_balance`, `wb_reference_surface` state)
+- **White Balance from Surface Reference**: pick any loaded reflector as WB source (popover on a Scene Preview swatch); gains recompute against it (`AppState.recompute_white_balance`, `wb_reference_surface` state)
 - **Film Emulation Target**: overlay a film profile's response as a target with its own independent filter stack and white balance
 - **Imports**: per-card CSV upload expansion cards on the Data shelf (`views/shelf_data.py`); dispatched via `views/actions.py` → `services/importing.py`
 
@@ -136,7 +137,7 @@ Profiles load from `data/film_data/` TSV files with `# Key: Value` headers (`Man
 
 ## Testing
 
-Standard-library `unittest` suite in `tests/` — run `python -m unittest discover` from `program/` (157 tests covering calculations, data loading, importing, presenter, spectra, state, and report rendering). Report tests compare against golden outputs via `numpy.testing`. Harness strategy beyond this suite is an open decision.
+Standard-library `unittest` suite in `tests/` — run `python -m unittest discover` from `program/` (183 tests covering calculations, data loading, importing, presenter, spectra, state, and report rendering). Report tests compare against golden outputs via `numpy.testing`. Harness strategy beyond this suite is an open decision.
 
 ## Deployment
 

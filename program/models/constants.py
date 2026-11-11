@@ -27,6 +27,11 @@ import numpy as np
 # Standard wavelength grid for all spectral data interpolation
 INTERP_GRID = np.arange(300, 1101, 1)  # 300–1100 nm, step 1 nm (standard optical range)
 
+# Photographic visible band: bounds of the human-vision spectrum strip and
+# the UV / VIS / IR chart zoning
+VISIBLE_MIN_NM = 380
+VISIBLE_MAX_NM = 700
+
 # Mathematical constants for numerical stability
 EPSILON = 1e-6  # Small value to prevent division by zero and log domain errors
 
@@ -34,13 +39,20 @@ EPSILON = 1e-6  # Small value to prevent division by zero and log domain errors
 # DATA FOLDER STRUCTURE
 # =============================================================================
 
+# Repo-root anchor: resolved from this file's location so data, output and
+# cache paths are identical no matter which working directory the app is
+# launched from (a CWD=program/ launch used to write imports into a stray
+# program/program/ tree).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = _REPO_ROOT  # Public alias: path anchoring for state_manager/tests
+
 # Data directory paths - centralized for consistency
 DATA_FOLDERS = {
-    'filters': "program/data/filters_data",
-    'qe': "program/data/QE_data",
-    'film': "program/data/film_data",
-    'illuminants': "program/data/illuminants",
-    'reflectors': "program/data/reflectors",
+    'filters': str(_REPO_ROOT / "program/data/filters_data"),
+    'qe': str(_REPO_ROOT / "program/data/QE_data"),
+    'film': str(_REPO_ROOT / "program/data/film_data"),
+    'illuminants': str(_REPO_ROOT / "program/data/illuminants"),
+    'reflectors': str(_REPO_ROOT / "program/data/reflectors"),
 }
 
 # Human-readable labels for sensor/film profile types
@@ -54,14 +66,18 @@ SENSOR_TYPE_LABELS = {
 # Valid film-profile types: film CSV import validation + Data shelf select
 FILM_TYPES = ('color_negative', 'color_slide', 'bw')
 
+# Default advanced-search wavelength criterion row (0-100 % scale; AppState
+# owns the field, views use this when adding or resetting a criterion row)
+DEFAULT_CRITERION = {"wavelength": 550, "trans_min": 0, "trans_max": 100}
+
 # Output directory paths
 OUTPUT_FOLDERS = {
-    'reports': "program/output",  # Main output directory for generated reports
-    'filter_import': "program/data/filters_data"  # Filter import destination
+    'reports': str(_REPO_ROOT / "program/output"),  # Generated reports
+    'filter_import': str(_REPO_ROOT / "program/data/filters_data")  # Filter import destination
 }
 
 # Persistent JSON files
-MY_FILTERS_FILE = "program/data/filters_data/my_filters.json"
+MY_FILTERS_FILE = str(_REPO_ROOT / "program/data/filters_data/my_filters.json")
 
 # =============================================================================
 # TSV FILE STRUCTURE CONSTANTS
@@ -112,7 +128,7 @@ PRECISION_DECIMALS = 3   # Decimal places for processed values
 DEFAULT_HEX_COLOR = "#838383"                # Default filter color (neutral gray)
 
 # Cache configuration
-CACHE_DIR = Path("program/cache")  # Directory for storing cached computation results
+CACHE_DIR = _REPO_ROOT / "program" / "cache"  # Directory for storing cached computation results
 
 # Default white balance multiplier values (unity gain)
 DEFAULT_WB_GAINS = {
@@ -120,6 +136,12 @@ DEFAULT_WB_GAINS = {
     'G': 1.0,        # Green channel multiplier (reference)
     'B': 1.0         # Blue channel multiplier
 }
+
+# Scene preview coverage guard: a surface is flagged "partial data" when more
+# than this fraction of the chain's spectral weight (illuminant x stack
+# transmission x sensor QE) falls on wavelengths where its reflectance has
+# no data.
+SCENE_COVERAGE_LIMIT = 0.10
 
 # =============================================================================
 # CHART RENDERING AND VISUALIZATION CONSTANTS
@@ -160,9 +182,21 @@ GRID_HEIGHT_RATIOS = [1.2, 0.6, 3.2, 0.8, 3.2]
 
 # Sensor response plot configuration
 SENSOR_RESPONSE_DEFAULTS = {
-    'spectrum_strip_position_pct': 1.02,   # Position of spectrum strip (relative to max response)
+    'spectrum_strip_position_pct': 1.02,   # Camera-capture strip y (relative to max response)
+    'human_strip_position_pct': 1.075,     # Human-vision strip y, stacked above the camera strip
     'saturation_scaling_factor': 5.0,      # Color saturation enhancement factor
     'min_saturation': 0.15                 # Minimum saturation value for visibility
+}
+
+# Human-vision spectrum strip: hue legend — per-wavelength perceived color
+# (CIE-1931 observer, normalized per wavelength so core hues are readable;
+# true photopic brightness is shown in the hover text).  The strip covers
+# only the visible band: its edges taper to black over 'edge_taper_nm',
+# marking where human vision fades out — UV / IR are not drawn at all.
+SPECTRUM_STRIP = {
+    'solo_position_pct': 1.05,       # filter chart: strip y above the curves
+    'marker_size': 9,                # px — matches the camera strip
+    'edge_taper_nm': 60,             # visible-band edge fade to black
 }
 
 # Report generation configuration

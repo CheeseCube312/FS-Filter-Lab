@@ -17,14 +17,42 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from models.constants import DEFAULT_WB_GAINS, MY_FILTERS_FILE
+from models.constants import (
+    DEFAULT_CRITERION,
+    DEFAULT_WB_GAINS,
+    MY_FILTERS_FILE,
+    REPO_ROOT,
+)
 from models.core import ChannelMixerSettings, SensorProfile
 
 from services.spectra import wb_gains as compute_wb_gains
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REFLECTORS_FILE = "program/data/reflectors/default_reflectors.json"
+# Anchored like the models/constants paths: immune to the launch directory.
+DEFAULT_REFLECTORS_FILE = str(
+    REPO_ROOT / "program/data/reflectors/default_reflectors.json"
+)
+
+
+def _normalize_reflector_entry(entry: str) -> str:
+    """Canonical repo-relative POSIX path for a stored reflector source.
+
+    The default-reflector JSON historically mixed absolute and repo-relative
+    entries (saves recorded whatever form the loader used); matching and
+    saving must not depend on the form a path was written in.
+    """
+    path = Path(entry)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    try:
+        path = path.resolve()
+    except OSError:  # unresolvable: keep the entry as written
+        return str(entry)
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:  # outside the repo: keep the absolute POSIX form
+        return path.as_posix()
 
 
 def _load_json_list(path: str, key: str) -> List[str]:
@@ -52,7 +80,7 @@ def _save_json_list(path: str, key: str, items: List[str]) -> None:
 
 def _default_wavelength_criteria() -> List[Dict[str, int]]:
     """Fresh default wavelength-criteria row (mutable default, so a factory)."""
-    return [{"wavelength": 550, "trans_min": 0, "trans_max": 100}]
+    return [dict(DEFAULT_CRITERION)]
 
 
 @dataclass
@@ -73,23 +101,20 @@ class AppState:
     active_profile: Optional[SensorProfile] = None
     illuminant: Optional[np.ndarray] = None
     illuminant_name: Optional[str] = None
-    # --- Film emulation target ---
-    film_emulation_profile: Optional[SensorProfile] = None
-    film_emulation_profile_name: Optional[str] = None
-    film_emulation_wb: bool = False
-    film_emulation_filters: List[str] = field(default_factory=list)
     # --- Computed results ---
     white_balance_gains: Dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_WB_GAINS)
     )
     wb_reference_surface: Optional[str] = None
-    # --- Surfaces instrument: reflectors added as color-preview chips (§3.2.3) ---
+    # --- Surfaces instrument: reflectors added as color-preview chips ---
     selected_surfaces: List[str] = field(default_factory=list)
-    # --- Data shelf: last import outcome per importer card (§3.3) ---
+    # --- Data shelf: last import outcome per importer card ---
     last_import: Dict[str, Dict[str, str]] = field(default_factory=dict)
     # --- Display toggles ---
     apply_white_balance: bool = False
     my_filters_only: bool = False
+    # --- Scene preview: "camera look" render mode (filmic tone + chroma) ---
+    scene_look: bool = True
     # --- Advanced filter search (persists across UI rebuilds) ---
     advanced_search_manufacturers: List[str] = field(default_factory=list)
     advanced_search_wavelength_criteria: List[Dict[str, int]] = field(
@@ -174,22 +199,18 @@ class AppState:
                     reflector=ref_reflector.values,
                 )
                 self.white_balance_gains = wb_gains
-            else:
-                # Surface gone or no collection loaded: fall back to standard
-                # gains AND drop the dangling reference, so the UI chip and
-                # the stored gains can never disagree.
-                logger.warning("WB reference surface not found: %s", wb_ref)
-                self.wb_reference_surface = None
-                wb_gains = compute_wb_gains(
-                    trans_interp, self.current_qe, self.illuminant,
-                )
-                self.white_balance_gains = wb_gains
-        else:
-            wb_gains = compute_wb_gains(
-                trans_interp, self.current_qe, self.illuminant,
-            )
-            self.white_balance_gains = wb_gains
+                return wb_gains
 
+            # Surface gone or no collection loaded: fall back to standard
+            # gains AND drop the dangling reference, so the UI chip and
+            # the stored gains can never disagree.
+            logger.warning("WB reference surface not found: %s", wb_ref)
+            self.wb_reference_surface = None
+
+        wb_gains = compute_wb_gains(
+            trans_interp, self.current_qe, self.illuminant,
+        )
+        self.white_balance_gains = wb_gains
         return wb_gains
 
     # ====================================================================
@@ -208,34 +229,37 @@ class AppState:
         else:
             self.active_profile = None
 
-    def select_film_emulation_target(self, name: Optional[str], sensor_profiles: Dict[str, Any]) -> None:
-        """Set the film emulation target from a named SensorProfile (film only)."""
-        if not name or name == "None":
-            self.film_emulation_profile = None
-            self.film_emulation_profile_name = None
-        else:
-            self.film_emulation_profile = sensor_profiles.get(name)
-            self.film_emulation_profile_name = name
-
     # ====================================================================
     # DEFAULT REFLECTOR LIST MANAGEMENT
     # ====================================================================
 
     def _load_default_reflectors_from_file(self) -> List[str]:
-        return _load_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors")
+        seen: List[str] = []
+        for entry in _load_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors"):
+            normalized = _normalize_reflector_entry(str(entry))
+            if normalized not in seen:
+                seen.append(normalized)
+        return seen
 
     def _save_default_reflectors_to_file(self, reflector_files: List[str]) -> None:
-        _save_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors", reflector_files)
+        normalized: List[str] = []
+        for entry in reflector_files:
+            path = _normalize_reflector_entry(str(entry))
+            if path not in normalized:
+                normalized.append(path)
+        _save_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors", normalized)
 
     def get_default_reflector_files(self) -> List[str]:
         return self._default_reflector_files
 
     def is_default_reflector(self, source_file: str) -> bool:
-        return source_file in self.get_default_reflector_files()
+        return _normalize_reflector_entry(
+            source_file) in self.get_default_reflector_files()
 
     def add_to_default_reflectors(self, source_file: str) -> None:
-        if source_file not in self._default_reflector_files:
-            self._default_reflector_files.append(source_file)
+        entry = _normalize_reflector_entry(source_file)
+        if entry not in self._default_reflector_files:
+            self._default_reflector_files.append(entry)
             self._save_default_reflectors_to_file(self._default_reflector_files)
 
     def seed_isdefault_reflectors(self, reflector_collection: Any) -> None:
