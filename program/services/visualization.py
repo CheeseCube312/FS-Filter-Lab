@@ -192,31 +192,44 @@ def _apply_plotly_default_style(fig, title, x_title="Wavelength (nm)", y_title="
     return fig
 
 
-def _add_filter_curve_to_plotly(fig, x, y, mask, label, color):
-    """Add a filter transmission curve (plus dotted extrapolation) to a Plotly figure."""
+def _add_filter_curve_to_plotly(fig, x, y, mask, label, color, emphasize=True):
+    """Add a filter transmission curve (plus dotted extrapolation) to a Plotly figure.
+
+    ``emphasize=False`` renders a faint underlay stroke (multi-filter stacks):
+    the filter's own contribution stays visible while the bold Combined line
+    carries the reading.
+    """
     y_display = y.copy()
-    
+    opacity = 1.0 if emphasize else 0.35
+    main_style = _create_line_style(color) if emphasize else dict(color=color, width=1.4)
+
     # Add main curve
     fig.add_trace(go.Scatter(
         x=x,
         y=y_display,
         mode='lines',
         name=label,
-        line=_create_line_style(color),
+        line=main_style,
+        opacity=opacity,
         showlegend=True
     ))
-    
+
     # Add extrapolated regions if mask exists
     if mask is not None and np.any(mask):
         extrap_y = y_display.copy()
         extrap_y[~mask] = np.nan
-        
+        extrap_style = (
+            _create_line_style(color, dash='dot')
+            if emphasize else dict(color=color, width=1.4, dash='dot')
+        )
+
         fig.add_trace(go.Scatter(
             x=x,
             y=extrap_y,
             mode='lines',
             name=f'{label} (extrapolated)',
-            line=_create_line_style(color, dash='dot'),
+            line=extrap_style,
+            opacity=opacity,
             showlegend=False
         ))
 
@@ -394,24 +407,53 @@ def create_filter_response_plot(
     combined: Optional[np.ndarray],
     log_stops: bool,
     filter_names: List[str],
-    filter_hex_colors: List[str]
+    filter_hex_colors: List[str],
+    stack_entries: Optional[List[Tuple[str, str, int, int]]] = None,
 ) -> go.Figure:
-    """Create a plotly figure showing filter response curves."""
+    """Create a plotly figure showing filter response curves.
+
+    stack_entries: presenter-prepared ``[(name, hex_color, matrix_index,
+    multiplier)]`` in stack order. When given, each unique filter renders as
+    a faint trace of its multiplied curve (``row ** multiplier``, i.e. T^N)
+    so the bold Combined line reads as their product; repeated entries
+    collapse into one trace. None keeps the legacy per-index rendering
+    (individual curves bold when no Combined line exists, faint when it does).
+    """
     fig = go.Figure()
     displayed_curves: List[np.ndarray] = []
-    
-    # Add individual filter curves
-    for filter_index in selected_indices:
-        transmission = filter_matrix[filter_index]
-        mask = masks[filter_index] if masks is not None else np.zeros_like(transmission, dtype=bool)
-        name = filter_names[filter_index]
-        color = filter_hex_colors[filter_index]
-        
-        # Convert to log scale or percentage scale for display
-        y_data = -np.log2(np.maximum(transmission, 1e-6)) if log_stops else transmission * 100
-        
-        displayed_curves.append(y_data)
-        _add_filter_curve_to_plotly(fig, interp_grid, y_data, mask, name, color)
+
+    if stack_entries is not None:
+        seen: set = set()
+        for name, color, filter_index, multiplier in stack_entries:
+            if filter_index in seen:
+                continue
+            seen.add(filter_index)
+            label = name if multiplier == 1 else f"{name} ×{multiplier}"
+            transmission = filter_matrix[filter_index] ** multiplier
+            mask = masks[filter_index] if masks is not None else np.zeros_like(transmission, dtype=bool)
+
+            # Convert to log scale or percentage scale for display
+            y_data = -np.log2(np.maximum(transmission, 1e-6)) if log_stops else transmission * 100
+
+            displayed_curves.append(y_data)
+            _add_filter_curve_to_plotly(
+                fig, interp_grid, y_data, mask, label, color,
+                emphasize=combined is None)
+    else:
+        # Add individual filter curves
+        for filter_index in selected_indices:
+            transmission = filter_matrix[filter_index]
+            mask = masks[filter_index] if masks is not None else np.zeros_like(transmission, dtype=bool)
+            name = filter_names[filter_index]
+            color = filter_hex_colors[filter_index]
+
+            # Convert to log scale or percentage scale for display
+            y_data = -np.log2(np.maximum(transmission, 1e-6)) if log_stops else transmission * 100
+
+            displayed_curves.append(y_data)
+            _add_filter_curve_to_plotly(
+                fig, interp_grid, y_data, mask, name, color,
+                emphasize=combined is None)
     
     # Add combined transmission if available
     if combined is not None:

@@ -10,16 +10,19 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from models.constants import INTERP_GRID
 from models.core import ColorNegativeFilmProfile, ReflectorCollection
 from services.presenter import (
     QE_ILLUMINANT_REQUIRED_MSG,
     prepare_filter_analysis,
+    prepare_filter_detail,
     prepare_filter_rows,
     prepare_header_status,
     prepare_reference,
     prepare_reflectors_shelf,
     prepare_scene_preview,
     prepare_sensor_analysis,
+    prepare_stack_rows,
     search_filters,
     search_reflectors,
 )
@@ -444,6 +447,114 @@ class ReflectorSearch(TestCase):
         self.assertEqual(list(search_reflectors(df, [], [], ["Animal"])["Name"]),
                          ["B"])
         self.assertEqual(len(search_reflectors(df, [], [], [])), 2)
+
+
+class TransmissionOverlay(TestCase):
+    """The transmission chart: per-filter T^N underlays beneath Combined."""
+
+    def _legend_traces(self, fig):
+        # Line traces only: the human-vision strip rides along with
+        # showlegend=True but is a marker scatter, not a curve.
+        return [t for t in fig.data if t.showlegend and t.mode == "lines"]
+
+    def test_multiplied_underlay_is_faint_and_matches_t_pow_n(self):
+        with state_sandbox():
+            state = AppState()
+            nd6 = display_name("ND6", "N1", "Foo")
+            state.selected_filters = [nd6]
+            state.filter_multipliers = {nd6: 2}
+            fig = prepare_filter_analysis(state, shelf_collection()).filter_response_fig
+
+            i550 = int(np.where(INTERP_GRID == 550)[0][0])
+            underlay = next(t for t in self._legend_traces(fig) if t.name == f"{nd6} ×2")
+            combined = next(t for t in self._legend_traces(fig) if t.name == "Combined")
+            # Flat 25% curve stacked twice: T^2 = 6.25% — the underlay and the
+            # bold Combined line agree on the product.
+            self.assertClose(float(underlay.y[i550]), 6.25)
+            self.assertClose(float(combined.y[i550]), 6.25)
+            self.assertLess(underlay.opacity, 1.0)      # faint stroke
+            self.assertLess(underlay.line.width, combined.line.width)
+            self.assertIsNone(combined.opacity)          # bold line: full strength
+
+    def test_single_filter_stays_bold_and_unmultiplied(self):
+        with state_sandbox():
+            state = AppState()
+            nd6 = display_name("ND6", "N1", "Foo")
+            state.selected_filters = [nd6]
+            fig = prepare_filter_analysis(state, shelf_collection()).filter_response_fig
+
+            legend = [t.name for t in self._legend_traces(fig)]
+            self.assertEqual(legend, [nd6])              # no Combined, no ×N
+            solo = fig.data[0]
+            self.assertIn(solo.opacity, (None, 1.0))     # readable on its own
+
+
+class StackRowsPresenter(TestCase):
+    """Stack editor rows carry resolved swatch colors and multipliers."""
+
+    def test_rows_carry_resolved_color_and_multiplier(self):
+        with state_sandbox():
+            collection = shelf_collection()
+            state = AppState()
+            nd6 = display_name("ND6", "N1", "Foo")
+            yellow = display_name("Oklahoma Yellow", "Y1", "Lee")
+            state.selected_filters = [nd6, yellow]
+            state.filter_multipliers = {nd6: 3}
+            rows = prepare_stack_rows(state, collection)
+            self.assertEqual([r.display_name for r in rows], [nd6, yellow])
+            self.assertEqual([r.multiplier for r in rows], [3, 1])
+            self.assertEqual(rows[0].hex_color, "#204060")
+
+    def test_unknown_library_member_falls_back_to_grey(self):
+        with state_sandbox():
+            state = AppState()
+            state.selected_filters = ["Gone (G9, Ghost)"]
+            rows = prepare_stack_rows(state, shelf_collection())
+            self.assertEqual(rows[0].hex_color, "#888888")
+            self.assertEqual(rows[0].multiplier, 1)
+
+
+class FilterDetailPresenter(TestCase):
+    """The detail dialog shows one filter's OWN curve, never the stack."""
+
+    def test_detail_shows_single_bold_curve_and_metadata(self):
+        with state_sandbox():
+            data = make_app_data(shelf_collection())
+            state = AppState()
+            nd6 = display_name("ND6", "N1", "Foo")
+            state.selected_filters = [nd6]
+            state.filter_multipliers = {nd6: 2}
+            vm = prepare_filter_detail(state, data, nd6)
+            self.assertEqual(vm.manufacturer, "Foo")
+            self.assertEqual(vm.filter_number, "N1")
+            self.assertTrue(vm.in_stack)
+            self.assertEqual(vm.multiplier, 2)
+            self.assertFalse(vm.is_owned)
+            named = [t for t in vm.detail_fig.data
+                     if t.showlegend and t.mode == "lines"]
+            self.assertEqual([t.name for t in named], [nd6])
+            self.assertIn(named[0].opacity, (None, 1.0))  # bold, full strength
+            i550 = int(np.where(INTERP_GRID == 550)[0][0])
+            self.assertClose(float(named[0].y[i550]), 25.0)  # own curve, not T^2
+
+    def test_unknown_filter_returns_none(self):
+        with state_sandbox():
+            vm = prepare_filter_detail(
+                AppState(), make_app_data(shelf_collection()), "Gone (G9, Ghost)")
+            self.assertIsNone(vm)
+
+
+class FilterRowsLimit(TestCase):
+    """The shelf limit caps rendered rows, not the reported match count."""
+
+    def test_limit_caps_rows_but_not_the_match_count(self):
+        with state_sandbox():
+            state = AppState()
+            shelf = prepare_filter_rows(
+                state, make_app_data(shelf_collection()),
+                query="", use_advanced=True, limit=2)
+            self.assertEqual(len(shelf.rows), 2)
+            self.assertEqual(shelf.total_matches, 3)
 
 
 if __name__ == "__main__":

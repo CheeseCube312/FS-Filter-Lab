@@ -132,6 +132,25 @@ def prepare_filter_analysis(
         for i, f in enumerate(filter_collection.filters)
     ]
 
+    # Per-filter underlay entries: unique stack members with their multiplied
+    # curves (T^N), drawn faint beneath the bold Combined line so the stack
+    # reads as a product of its parts.
+    display_to_index = filter_collection.get_display_to_index_map()
+    stack_entries: List[Tuple[str, str, int, int]] = []
+    seen_indices: set = set()
+    for name in app_state.selected_filters:
+        idx = display_to_index.get(name)
+        if idx is None or idx in seen_indices:
+            continue
+        seen_indices.add(idx)
+        entry_filter = filter_collection.filters[idx]
+        entry_color = filter_display_color(
+            filter_collection.filter_matrix[idx], entry_filter.hex_color)
+        stack_entries.append((
+            name, entry_color, idx,
+            int(app_state.filter_multipliers.get(name, 1)),
+        ))
+
     fig = create_filter_response_plot(
         interp_grid=INTERP_GRID,
         filter_matrix=filter_collection.filter_matrix,
@@ -140,7 +159,8 @@ def prepare_filter_analysis(
         combined=combined,
         log_stops=bool(log_stops),
         filter_names=filter_names,
-        filter_hex_colors=filter_hex_colors
+        filter_hex_colors=filter_hex_colors,
+        stack_entries=stack_entries
     )
 
     return FilterAnalysisVM(metrics=metrics, filter_response_fig=fig)
@@ -513,6 +533,89 @@ def prepare_filter_rows(
             ),
         ))
     return FilterShelfVM(rows=rows, total_matches=int(len(result_df)))
+
+
+@dataclass
+class StackRowVM:
+    """One stack-editor row in the setup rail."""
+    display_name: str
+    hex_color: str
+    multiplier: int
+
+
+def prepare_stack_rows(
+    app_state: AppState, filter_collection: FilterCollection,
+) -> List[StackRowVM]:
+    """Stack editor rows: display name, resolved swatch color, multiplier.
+
+    Read-only; the swatch trusts metadata but derives from the spectrum when
+    a file ships no (valid) color — same rule as the shelf rows.
+    """
+    display_to_index = filter_collection.get_display_to_index_map()
+    rows: List[StackRowVM] = []
+    for name in app_state.selected_filters:
+        idx = display_to_index.get(name)
+        multiplier = int(app_state.filter_multipliers.get(name, 1))
+        if idx is None:
+            rows.append(StackRowVM(display_name=name, hex_color="#888888",
+                                   multiplier=multiplier))
+            continue
+        entry_filter = filter_collection.filters[idx]
+        color = filter_display_color(filter_collection.filter_matrix[idx],
+                                     entry_filter.hex_color)
+        rows.append(StackRowVM(display_name=name, hex_color=color,
+                               multiplier=multiplier))
+    return rows
+
+
+@dataclass
+class FilterDetailVM:
+    """Everything the filter detail dialog renders for one library filter."""
+    display_name: str
+    manufacturer: str
+    filter_number: str
+    hex_color: str
+    is_owned: bool
+    in_stack: bool
+    multiplier: int
+    detail_fig: go.Figure
+
+
+def prepare_filter_detail(
+    app_state: AppState, data: AppData, display_name: str,
+) -> Optional[FilterDetailVM]:
+    """Full-size detail view for one library filter.
+
+    The figure always shows the filter's OWN transmission curve (single, not
+    the stack) — opening a detail dialog cannot disturb the analysis state.
+    Returns None when the display name is no longer in the library.
+    """
+    collection = data.filter_collection
+    idx = collection.get_display_to_index_map().get(display_name)
+    if idx is None:
+        return None
+    entry_filter = collection.filters[idx]
+    fig = create_filter_response_plot(
+        interp_grid=INTERP_GRID,
+        filter_matrix=collection.filter_matrix,
+        masks=collection.extrapolated_masks,
+        selected_indices=[idx],
+        combined=None,
+        log_stops=False,
+        filter_names=[str(f) for f in collection.filters],
+        filter_hex_colors=[f.hex_color for f in collection.filters],
+    )
+    return FilterDetailVM(
+        display_name=display_name,
+        manufacturer=entry_filter.manufacturer,
+        filter_number=entry_filter.number,
+        hex_color=filter_display_color(collection.filter_matrix[idx],
+                                       entry_filter.hex_color),
+        is_owned=display_name in app_state.get_my_filters(),
+        in_stack=display_name in app_state.selected_filters,
+        multiplier=int(app_state.filter_multipliers.get(display_name, 1)),
+        detail_fig=fig,
+    )
 
 
 # =============================================================================
