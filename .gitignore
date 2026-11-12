@@ -1,28 +1,19 @@
-# Python
 .venv/
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Project-specific
-program/output/
 program/cache/
-program/data/  # Managed as git submodule - should not be tracked here
-
-# Personal user data (not for version control)
+program/output/
+.DS_Store
 program/data/filters_data/my_filters.json
 program/data/reflectors/default_reflectors.json
 
-# OS
-.DS_Store
-Thumbs.db
-ehthumbs.db
+__pycache__/
+.clinerules/
+
+# Testing / tooling artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/

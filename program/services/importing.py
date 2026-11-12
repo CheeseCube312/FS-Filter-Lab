@@ -12,26 +12,33 @@ Key Features:
 - File format validation and range checking
 - Safe filename generation and file saving
 
-Import Functions:
-- import_filter_from_csv: Import optical filter transmission data
-- import_illuminant_from_csv: Import illuminant spectral power distributions
-- import_qe_from_csv: Import camera sensor quantum efficiency data
-- import_reflectance_absorption_from_csv: Import surface reflectance/absorption spectra
+Generic pipeline shared by the five single-spectrum importers:
+- _extrapolated_series: validate -> optional 0-100 cap / negative clamp ->
+  sort -> 5nm-rounded output range with optional edge extrapolation ->
+  interpolate (filters, reflectance/absorption spectra)
+- _resample_channel: trim -> validate -> optional 0-100 cap -> clamp ->
+  sort -> resample onto INTERP_GRID with edge-fill policy and optional
+  peak normalisation (illuminants, camera QE, film channels)
 
-All functions return (success: bool, message: str) tuples for consistent
-error handling in the UI layer.
+Import adapters (one per on-disk format):
+- import_filter_from_csv: filter transmission -> tall TSV (filters_data)
+- import_illuminant_from_csv: illuminant SPD -> TSV (illuminants/)
+- import_qe_from_csv: camera QE, 3 X-Y pairs -> TSV (QE_data/)
+- import_film_from_csv: film sensitivity -> comment-header TSV (film_data/)
+- import_reflectance_absorption_from_csv: surface spectrum -> TSV
+  (reflectors/plant|other; value column is always 'Reflectance' - the
+  loader contract in services/data.py)
+All import_* functions return (success: bool, message: str) tuples for
+consistent error handling in the UI layer.
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from scipy.interpolate import interp1d
-from typing import Tuple, Dict, Any, List, Optional
-import requests
-import json
+from typing import Tuple, Dict, List, Optional
+import functools
 import logging
-import re
-from models.constants import INTERP_GRID, DATA_FOLDERS, OUTPUT_FOLDERS, TSV_ATTRIBUTION_FIELDS
+from models.constants import INTERP_GRID, DATA_FOLDERS, OUTPUT_FOLDERS, FILM_TSV_FIELDS
 
 # Configure logging for debugging import issues
 logger = logging.getLogger(__name__)
@@ -83,32 +90,68 @@ def _validate_wavelength_data(wavelengths, values, value_type="spectral values")
 
 
 
-def _safe_file_save(df: pd.DataFrame, file_path: Path, data_type: str) -> Tuple[bool, str]:
+def _safe_file_save(df: pd.DataFrame, file_path: Path, data_type: str,
+                    header_lines: Optional[List[str]] = None) -> Tuple[bool, str]:
     """
-    Safely save a DataFrame to a file with error handling.
-    
+    Safely save a DataFrame to a TSV file with error handling.
+
     Args:
         df: DataFrame to save
         file_path: Path to save the file
         data_type: Type of data being saved (for error messages)
-        
+        header_lines: Optional comment-header lines written above the data
+            table (film profiles use "# Key\tvalue" metadata headers)
+
     Returns:
         Tuple of (success, message)
     """
     try:
         # Ensure directory exists
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Save the file
-        df.to_csv(file_path, sep='\\t', index=False)
+        if header_lines:
+            content = '\n'.join(header_lines) + '\n' + df.to_csv(sep='\t', index=False)
+            file_path.write_text(content, encoding='utf-8')
+        else:
+            df.to_csv(file_path, sep='\t', index=False)
         return True, f"{data_type} data saved successfully to {file_path}"
-        
+
     except PermissionError:
         return False, f"Permission denied: Cannot write to {file_path}. File may be open in another application."
     except OSError as e:
         return False, f"File system error: {str(e)}"
     except Exception as e:
         return False, f"Failed to save file to {file_path}: {str(e)}"
+
+
+def _import_errors(label: str):
+    """
+    Decorator for the single-spectrum import adapters: run the adapter and
+    map errors onto the (success, message) UI contract. Validation errors
+    (ValueError) are shown verbatim; anything else is logged and reported
+    generically.
+    """
+    def decorator(handler):
+        @functools.wraps(handler)
+        def wrapper(*args, **kwargs):
+            try:
+                return handler(*args, **kwargs)
+            except ValueError as e:
+                return False, str(e)
+            except Exception as e:
+                logger.exception("Unexpected error in %s import: %s", label, e)
+                return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
+        return wrapper
+    return decorator
+
+
+def _parse_upload(uploaded_file):
+    """Parse an uploaded CSV; parse failures become user-facing errors."""
+    try:
+        return _parse_csv(uploaded_file)
+    except ValueError as e:
+        raise ValueError(f"CSV parsing failed: {str(e)}") from None
 
 
 def _parse_csv(file, separator=';', fallback_separator=','):
@@ -171,406 +214,37 @@ def _get_wavelength_range(wavelengths, extrap_lower=False, extrap_upper=False):
 
 def _interpolate_spectrum(wavelengths, values, target_wavelengths, extrap_lower=False, extrap_upper=False):
     """Interpolate spectral data to a target wavelength range."""
-    interpolator = interp1d(wavelengths, values, kind='linear', bounds_error=False, fill_value=np.nan)
-    interpolated = interpolator(target_wavelengths)
+    wavelengths = np.asarray(wavelengths, dtype=float)
+    values = np.asarray(values, dtype=float)
     
-    # Handle extrapolation
-    if extrap_lower:
-        below_mask = target_wavelengths < wavelengths.min()
-        interpolated[below_mask] = values[0]
-    if extrap_upper:
-        above_mask = target_wavelengths > wavelengths.max()
-        interpolated[above_mask] = values[-1]
+    # Match the previous scipy behaviour (assume_sorted=False): sort by
+    # wavelength first if the input is not already ascending.
+    if np.any(np.diff(wavelengths) < 0):
+        order = np.argsort(wavelengths)
+        wavelengths, values = wavelengths[order], values[order]
+    
+    # np.interp clamps outside the data range to the first/last value.
+    interpolated = np.interp(target_wavelengths, wavelengths, values)
+    
+    # Blank out targets beyond the data range unless edge-value extrapolation
+    # was requested (the clamp already yields exactly values[0] / values[-1]).
+    if not extrap_lower:
+        interpolated[target_wavelengths < wavelengths.min()] = np.nan
+    if not extrap_upper:
+        interpolated[target_wavelengths > wavelengths.max()] = np.nan
     
     return np.clip(np.round(interpolated, 3), 0.0, None)
 
 
 def _sanitize_filename(name):
-    """Convert a string to a valid filename."""
+    """Convert a string to a valid import filename (spaces -> underscores).
+
+    Deliberately different from
+    visualization.sanitize_filename_component (report paths; invalid chars
+    -> '-'): unifying the two would change the
+    on-disk names future imports produce and orphan existing files.
+    """
     return ''.join(c for c in name if c.isalnum() or c in (' ', '_')).rstrip().replace(' ', '_')
-
-
-def _get_api_field(data: Dict, key: str, join_list: bool = True) -> str:
-    """Extract a field from API metadata, handling list/string variations."""
-    value = data.get(key, [])
-    if isinstance(value, list):
-        return ', '.join(value) if join_list else (value[0] if value else '')
-    return str(value) if value else ''
-
-
-def _fetch_ecosis_api_metadata(api_url: str) -> Tuple[bool, Optional[Dict[str, Any]], str]:
-    """
-    Fetch metadata from ECOSIS API endpoint.
-    
-    Args:
-        api_url: ECOSIS API URL (e.g., https://ecosis.org/api/package/package-name)
-        
-    Returns:
-        Tuple of (success, metadata_dict, error_message)
-    """
-    try:
-        logger.info("Fetching ECOSIS API metadata from: %s", api_url)
-        response = requests.get(api_url, timeout=30)
-        response.raise_for_status()
-        
-        metadata = response.json()
-        
-        # Validate that this looks like ECOSIS API data
-        if not isinstance(metadata, dict):
-            return False, None, "API response is not a valid JSON object"
-            
-        # Check for expected ECOSIS API structure
-        if 'ecosis' not in metadata:
-            return False, None, "API response does not contain ECOSIS metadata structure"
-            
-        logger.info("Successfully fetched ECOSIS API metadata")
-        return True, metadata, ""
-        
-    except requests.exceptions.Timeout:
-        return False, None, "Request timeout - API server took too long to respond"
-    except requests.exceptions.ConnectionError:
-        return False, None, "Connection error - check internet connection and API URL"
-    except requests.exceptions.HTTPError as e:
-        return False, None, f"HTTP error {e.response.status_code}: {e.response.reason}"
-    except requests.exceptions.RequestException as e:
-        return False, None, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, None, "Invalid JSON response from API"
-    except Exception as e:
-        logger.error("Unexpected error fetching ECOSIS metadata: %s", e)
-        return False, None, f"Unexpected error: {str(e)}"
-
-
-def _extract_attribution_info(api_metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract key attribution and metadata information from ECOSIS API response.
-    
-    Args:
-        api_metadata: Full API metadata dictionary
-        
-    Returns:
-        Dictionary with cleaned attribution information
-    """
-    ecosis_data = api_metadata.get('ecosis', {})
-    
-    # Build attribution from ecosis nested data and top-level metadata
-    attribution = {
-        # From ecosis object
-        'package_id': ecosis_data.get('package_id', ''),
-        'package_name': ecosis_data.get('package_name', ''),
-        'package_title': ecosis_data.get('package_title', ''),
-        'organization': ecosis_data.get('organization', ''),
-        'description': ecosis_data.get('description', ''),
-        'license': ecosis_data.get('license', ''),
-        'created': ecosis_data.get('created', ''),
-        'modified': ecosis_data.get('modified', ''),
-        'spectra_count': ecosis_data.get('spectra_count', 0),
-        
-        # From top-level (use helper for list/string handling)
-        'author': _get_api_field(api_metadata, 'Author', join_list=False),
-        'citation': _get_api_field(api_metadata, 'Citation', join_list=False),
-        'funding_source': _get_api_field(api_metadata, 'Funding Source', join_list=False),
-        'year': _get_api_field(api_metadata, 'Year', join_list=False),
-        'keywords': _get_api_field(api_metadata, 'Keywords'),
-        'theme': _get_api_field(api_metadata, 'Theme'),
-        'target_type': _get_api_field(api_metadata, 'Target Type'),
-        'measurement_quantity': _get_api_field(api_metadata, 'Measurement Quantity'),
-        'measurement_units': _get_api_field(api_metadata, 'Measurement Units'),
-        'instrument_manufacturer': _get_api_field(api_metadata, 'Instrument Manufacturer'),
-        'instrument_model': _get_api_field(api_metadata, 'Instrument Model'),
-        'nasa_gcmd_keywords': _get_api_field(api_metadata, 'NASA GCMD Keywords'),
-        'funding_grant_numbers': _get_api_field(api_metadata, 'Funding Source Grant Number'),
-        
-        # Single-value fields
-        'acquisition_method': _get_api_field(api_metadata, 'Acquisition Method', join_list=False),
-        'foreoptic_type': _get_api_field(api_metadata, 'Foreoptic Type', join_list=False),
-        'light_source': _get_api_field(api_metadata, 'Light Source', join_list=False),
-        'target_status': _get_api_field(api_metadata, 'Target Status', join_list=False),
-        'ecosystem_type': _get_api_field(api_metadata, 'Ecosystem Type', join_list=False),
-        'measurement_venue': _get_api_field(api_metadata, 'Measurement Venue', join_list=False),
-    }
-    
-    # DOI handling (with fallback to linked_data)
-    if 'doi' in ecosis_data:
-        doi = ecosis_data['doi']
-        attribution['doi'] = doi
-        if doi.startswith('doi:'):
-            attribution['doi_url'] = f"https://doi.org/{doi[4:]}"
-    
-    # Linked publications (and DOI fallback)
-    if 'linked_data' in ecosis_data:
-        linked_data = ecosis_data['linked_data']
-        if isinstance(linked_data, list) and linked_data:
-            links = []
-            for link in linked_data:
-                if isinstance(link, dict) and 'url' in link and 'label' in link:
-                    links.append(f"{link['label']}: {link['url']}")
-                    # Fallback: extract DOI URL if none exists
-                    if 'doi_url' not in attribution and 'doi.org/' in link.get('url', ''):
-                        attribution['doi_url'] = link['url']
-            if links:
-                attribution['related_publications'] = ' | '.join(links)
-    
-    # Processing info
-    proc_flags = []
-    for field in ['Processing Averaged', 'Processing Interpolated', 'Processing Resampled']:
-        val = _get_api_field(api_metadata, field, join_list=False)
-        if val:
-            proc_flags.append(f"{field.replace('Processing ', '')}: {val}")
-    if proc_flags:
-        attribution['processing_info'] = ' | '.join(proc_flags)
-    
-    # Measurement date (handle range)
-    dates = api_metadata.get('Measurement Date', [])
-    if isinstance(dates, list) and dates:
-        dates = sorted([d for d in dates if d])
-        attribution['measurement_date'] = dates[0] if len(dates) == 1 else f"{dates[0]} to {dates[-1]}"
-    elif isinstance(dates, str) and dates:
-        attribution['measurement_date'] = dates
-    
-    # Remove empty values
-    return {k: v for k, v in attribution.items() if v and str(v).strip()}
-
-
-# ============================================================================
-# ECOSIS UTILITIES
-# ============================================================================
-
-def get_ecosis_csv_metadata_columns(file_path: str) -> List[str]:
-    """
-    Get available metadata column names from an ECOSIS CSV file.
-    
-    Args:
-        file_path: Path to ECOSIS CSV file
-        
-    Returns:
-        List of non-wavelength column names
-    """
-    try:
-        df = pd.read_csv(file_path, nrows=1)  # Only read header row for efficiency
-        
-        metadata_cols = []
-        for col in df.columns:
-            try:
-                wavelength = float(str(col).strip())
-                # Skip if this looks like a wavelength column
-                if 200 <= wavelength <= 3000:
-                    continue
-            except (ValueError, TypeError):
-                # This is a metadata column
-                metadata_cols.append(str(col))
-        
-        return metadata_cols
-        
-    except Exception:
-        return []
-
-
-def import_ecosis_csv(file_path: str, output_dir: str, api_url: Optional[str] = None, name_column: Optional[str] = None, relevant_metadata: Optional[List[str]] = None) -> List[str]:
-    """
-    Import ECOSIS CSV file directly. User explicitly chooses this format.
-    
-    Args:
-        file_path: Path to ECOSIS CSV file
-        output_dir: Directory to save processed files
-        api_url: Optional ECOSIS API URL for metadata enhancement
-        name_column: Optional column name to use for search names (stores column name, not value)
-        relevant_metadata: Optional list of column names for Surface Color Preview display
-        
-    Returns:
-        List of created file paths
-    """
-    try:
-        # Fetch API metadata if provided
-        api_attribution = {}
-        
-        if api_url:
-            success, api_metadata, error_msg = _fetch_ecosis_api_metadata(api_url)
-            if success and api_metadata:
-                api_attribution = _extract_attribution_info(api_metadata)
-                logger.info("Fetched API metadata with %d attribution fields", len(api_attribution))
-            else:
-                logger.warning("Failed to fetch API metadata: %s", error_msg)
-                # Continue without API metadata
-        
-        # Always add source file and API URL to attribution (even if API fetch failed)
-        source_filename = Path(file_path).name
-        api_attribution['source_csv_file'] = source_filename
-        if api_url:
-            api_attribution['api_url'] = api_url
-        
-        df = pd.read_csv(file_path)
-        
-        if df.empty:
-            raise ValueError("CSV file is empty")
-            
-        # Find wavelength columns (numeric headers)
-        wavelength_cols = []
-        metadata_cols = []
-        
-        for col in df.columns:
-            try:
-                wavelength = float(str(col).strip())
-                # Accept wavelengths in reasonable spectral range
-                if 200 <= wavelength <= 3000:
-                    wavelength_cols.append((col, wavelength))
-                else:
-                    metadata_cols.append(col)
-            except (ValueError, TypeError):
-                metadata_cols.append(col)
-        
-        if len(wavelength_cols) < 10:
-            raise ValueError(f"Not enough wavelength columns found: {len(wavelength_cols)}. Expected at least 10.")
-            
-        # Sort wavelength columns by wavelength value
-        wavelength_cols.sort(key=lambda x: x[1])
-        
-        created_files = []
-        
-        for index, row in df.iterrows():
-            # Create sample name from available metadata - use any non-empty metadata columns
-            sample_parts = []
-            
-            # Go through all metadata columns and use the first few non-empty ones
-            for col_name in metadata_cols:
-                if pd.notna(row[col_name]) and str(row[col_name]).strip():
-                    value = str(row[col_name]).strip()
-                    if value.lower() != 'nan' and value != '':
-                        sample_parts.append(value)
-                        if len(sample_parts) >= 3:  # Limit to first 3 meaningful metadata values
-                            break
-            
-            # Fallback to row index if no metadata found
-            if not sample_parts:
-                sample_parts = [f"Sample_{index + 1}"]
-            
-            # Add dataset identifier if available from API
-            if api_attribution and 'organization' in api_attribution:
-                org_short = api_attribution['organization'][:10] if api_attribution['organization'] else ''
-                if org_short:
-                    org_short = re.sub(r'[^\w]', '', org_short)  # Clean organization name
-                    sample_parts.insert(0, org_short)
-            
-            # Clean sample name for filename
-            sample_name = "_".join(sample_parts).replace(" ", "_")
-            sample_name = re.sub(r'[^\w\-_\.]', '_', sample_name)
-            sample_name = re.sub(r'_{2,}', '_', sample_name).strip('_')
-            
-            # Limit filename length
-            if len(sample_name) > 50:
-                sample_name = sample_name[:50]
-            
-            # Extract spectral data and handle NaN properly
-            spectral_wavelengths = []
-            spectral_values = []
-            
-            for col_name, wavelength in wavelength_cols:
-                value = row[col_name]
-                # Only include data points with valid values
-                if pd.notna(value) and value != '':
-                    try:
-                        float_val = _safe_float(value)
-                        if not np.isnan(float_val):
-                            spectral_wavelengths.append(wavelength)
-                            spectral_values.append(float_val)
-                    except (ValueError, TypeError):
-                        continue  # Skip invalid values
-            
-            if len(spectral_wavelengths) < 5:
-                logger.warning("Skipping sample %s - insufficient valid data points (%d)", sample_name, len(spectral_wavelengths))
-                continue
-            
-            spectral_wavelengths = np.array(spectral_wavelengths)
-            spectral_values = np.array(spectral_values)
-            
-            # Filter to INTERP_GRID range (300-1100nm) before interpolation
-            wl_min, wl_max = INTERP_GRID[0], INTERP_GRID[-1]
-            mask = (spectral_wavelengths >= wl_min) & (spectral_wavelengths <= wl_max)
-            
-            if np.sum(mask) < 5:
-                logger.warning("Skipping sample %s - insufficient data in %s-%snm range", sample_name, wl_min, wl_max)
-                continue
-                
-            filtered_wavelengths = spectral_wavelengths[mask]
-            filtered_values = spectral_values[mask]
-            
-            # Interpolate to standard 1nm grid (300-1100nm)
-            interp_func = interp1d(filtered_wavelengths, filtered_values, kind='linear', 
-                                 bounds_error=False, fill_value='extrapolate')
-            interp_values = interp_func(INTERP_GRID)
-            
-            # Prepare TSV content with metadata as header comments
-            rows = []
-            
-            # Add CSV metadata as comments
-            if metadata_cols:
-                rows.append("# CSV Metadata:")
-                for col in metadata_cols:
-                    value = row[col] if pd.notna(row[col]) and row[col] != '' else ''
-                    if value:
-                        rows.append(f"# {col}\t{value}")
-                rows.append("#")  # Blank comment line
-            
-            # Add name_for_search field if user selected a column (store column name, not value)
-            if name_column and name_column in metadata_cols:
-                rows.append(f"# name_for_search	{name_column}")
-                rows.append("#")  # Blank comment line
-            
-            # Add relevant_metadata field if user selected columns (store column names, not values)
-            if relevant_metadata:
-                # Only include columns that exist in this CSV file
-                valid_relevant = [col for col in relevant_metadata if col in metadata_cols]
-                if valid_relevant:
-                    relevant_str = "|".join(valid_relevant)  # Join multiple column names with |
-                    rows.append(f"# relevant_metadata	{relevant_str}")
-                    rows.append("#")  # Blank comment line
-            
-            # Add API attribution as comments if available
-            if api_attribution:
-                rows.append("# Dataset Attribution (from ECOSIS API):")
-                for display_name, key in TSV_ATTRIBUTION_FIELDS:
-                    if key in api_attribution and api_attribution[key]:
-                        value = str(api_attribution[key])
-                        if len(value) > 100:
-                            value = value[:100] + "..."
-                        rows.append(f"# {display_name}\t{value}")
-                rows.append("#")  # Blank comment line
-            
-            # Simple data table: just Wavelength and Reflectance
-            rows.append("Wavelength\tReflectance")
-            
-            # Data rows - clean and simple
-            for wl, refl in zip(INTERP_GRID, interp_values):
-                rows.append(f"{wl}\t{refl:.10f}")
-            
-            # Save as TSV file  
-            filename = f"{sample_name}_{index+1}.tsv"  # Add index to avoid duplicates
-            filepath = Path(output_dir) / filename
-            
-            with open(filepath, 'w') as f:
-                f.write('\n'.join(rows))
-            
-            created_files.append(filepath)
-            
-        # Save complete API attribution information to a separate JSON file
-        if api_attribution:
-            attribution_file = Path(output_dir) / "dataset_attribution.json"
-            with open(attribution_file, 'w', encoding='utf-8') as f:
-                json.dump(api_attribution, f, indent=2, ensure_ascii=False)
-            logger.info("Complete attribution information saved to %s", attribution_file)
-            
-        # Log summary of what was processed
-        attribution_info = ""
-        if api_attribution:
-            org = api_attribution.get('organization', 'Unknown')
-            title = api_attribution.get('package_title', 'Unknown')
-            attribution_info = f" with attribution to {org} - {title}"
-        
-        logger.info("Successfully processed %d ECOSIS samples%s", len(created_files), attribution_info)
-        return created_files
-        
-    except Exception as e:
-        raise ValueError(f"Error importing ECOSIS CSV: {str(e)}")
 
 
 def _get_extrapolation_suffix(extrap_lower, extrap_upper):
@@ -580,353 +254,464 @@ def _get_extrapolation_suffix(extrap_lower, extrap_upper):
     if extrap_upper: suffix_parts.append("1100")
     return f"_extrapolated_{'_'.join(suffix_parts)}" if suffix_parts else ""
 
+def _extrapolated_series(wavelengths, values, value_label, extrap_lower, extrap_upper,
+                         clamp_negatives=False, cap_message_fn=None, on_negative=None):
+    """
+    Shared filter/reflectance pipeline: validate the raw 2-column series,
+    optionally cap it at 100 and clamp negatives, sort by wavelength, pick
+    the 5nm-rounded output range (extended to 300/1100nm when extrapolation
+    is requested) and interpolate onto it.
+
+    Raises ValueError with the user-facing message on invalid input.
+    Returns (new_wavelengths, interpolated_values).
+    """
+    is_valid, error_msg = _validate_wavelength_data(wavelengths, values, value_label)
+    if not is_valid:
+        raise ValueError(error_msg)
+
+    if cap_message_fn is not None:
+        max_val = values.max()
+        if max_val > 100:
+            raise ValueError(cap_message_fn(max_val))
+
+    if clamp_negatives and values.min() < 0:
+        if on_negative is not None:
+            on_negative(values.min())
+        values = np.clip(values, 0, None)
+
+    sort_idx = np.argsort(wavelengths)
+    wavelengths = wavelengths[sort_idx]
+    values = values[sort_idx]
+
+    min_wl, max_wl = _get_wavelength_range(wavelengths, extrap_lower, extrap_upper)
+    new_wavelengths = np.arange(min_wl, max_wl + 1, 1)
+
+    interpolated = _interpolate_spectrum(
+        wavelengths, values, new_wavelengths, extrap_lower, extrap_upper
+    )
+    return new_wavelengths, interpolated
+
+
+def _resample_channel(wavelengths, values, value_label, cap_message_fn=None,
+                      normalize_peak=False,
+                      clamp_negatives=True, on_negative=None):
+    """
+    Shared illuminant/QE/film pipeline for one X-Y channel: trim to the
+    shorter column, validate, optionally cap-check at 100, clamp negatives,
+    sort by wavelength and resample onto INTERP_GRID (rounded to 3 decimals).
+
+    Wavelengths beyond the measured range stay NaN ("unknown") — writers
+    drop those rows, so no edge values are ever fabricated.
+    normalize_peak=True rescales the resampled curve so its peak is 100
+    (illuminants).
+
+    Raises ValueError with the user-facing message on invalid input.
+    """
+    min_size = min(wavelengths.size, values.size)
+    wavelengths = wavelengths[:min_size]
+    values = values[:min_size]
+
+    is_valid, error_msg = _validate_wavelength_data(wavelengths, values, value_label)
+    if not is_valid:
+        raise ValueError(error_msg)
+
+    if cap_message_fn is not None:
+        max_val = values.max()
+        if max_val > 100:
+            raise ValueError(cap_message_fn(max_val))
+
+    if clamp_negatives and values.min() < 0:
+        if on_negative is not None:
+            on_negative(values.min())
+        values = np.clip(values, 0, None)
+
+    sort_idx = np.argsort(wavelengths)
+    resampled = np.interp(
+        INTERP_GRID, wavelengths[sort_idx], values[sort_idx],
+        left=np.nan, right=np.nan,
+    )
+
+    if normalize_peak:
+        peak = np.nanmax(resampled)
+        if peak > 0:
+            return np.round((resampled / peak) * 100.0, 3)
+        return resampled  # all-zero curve stays all-zero
+    return np.round(resampled, 3)
+
+
 # ============================================================================
 # FILTER IMPORT
 # ============================================================================
 
+def _paired_columns(df: pd.DataFrame, left: int, right: int):
+    """Row-aligned extraction of a (wavelength, value) column pair.
+
+    Rows where EITHER column is NaN are dropped from both series, so
+    wavelength/value rows stay paired. The previous per-column
+    dropna() desynced the two series whenever a CSV had an interior
+    blank in just one column of the pair.
+    """
+    pair = df.iloc[:, [left, right]].dropna()
+    return pair.iloc[:, 0].to_numpy(), pair.iloc[:, 1].to_numpy()
+
+
+@_import_errors("filter")
 def import_filter_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
     """
     Import filter data from a CSV file and save it to the data directory.
-    
+
     Args:
         uploaded_file: The uploaded CSV file
         meta: Dictionary containing filter metadata
         extrap_lower: Whether to extrapolate to 300nm
         extrap_upper: Whether to extrapolate to 1100nm
-        
+
     Returns:
         Tuple of (success, message)
     """
-    try:   
-        # Validate inputs
-        if uploaded_file is None:
-            return False, "No file provided for import."
-            
-        if not meta or not isinstance(meta, dict):
-            return False, "Invalid metadata provided."
-            
-        required_keys = ['manufacturer', 'filter_name', 'filter_number', 'hex_color']
-        missing_keys = [key for key in required_keys if key not in meta or not meta[key]]
-        if missing_keys:
-            return False, f"Missing required metadata: {', '.join(missing_keys)}"
-        
-        # Parse the CSV with detailed error handling
-        try:
-            raw_data = _parse_csv(uploaded_file)
-        except ValueError as e:
-            return False, f"CSV parsing failed: {str(e)}"
-            
-        wavelengths = raw_data.iloc[:, 0].dropna().values
-        transmissions = raw_data.iloc[:, 1].dropna().values
+    # Validate inputs
+    if uploaded_file is None:
+        return False, "No file provided for import."
 
-        # Validate wavelength data using common utility
-        is_valid, error_msg = _validate_wavelength_data(wavelengths, transmissions, "transmission")
-        if not is_valid:
-            return False, error_msg
-        
-        # Validate transmission values (should be 0-100 or 0-1)
-        trans_min, trans_max = transmissions.min(), transmissions.max()
-        if trans_max > 100:
-            return False, f"Transmission values seem too high (max: {trans_max:.2f}). Expected 0-100% or 0-1."
-        if trans_min < 0:
-            return False, f"Transmission values cannot be negative (min: {trans_min:.2f})."
+    if not meta or not isinstance(meta, dict):
+        return False, "Invalid metadata provided."
 
-        # Sort by wavelength
-        sort_idx = np.argsort(wavelengths)
-        wavelengths = wavelengths[sort_idx]
-        transmissions = transmissions[sort_idx]
+    required_keys = ['manufacturer', 'filter_name', 'filter_number', 'hex_color']
+    missing_keys = [key for key in required_keys if key not in meta or not meta[key]]
+    if missing_keys:
+        return False, f"Missing required metadata: {', '.join(missing_keys)}"
 
-        # Determine wavelength range
-        min_wl, max_wl = _get_wavelength_range(wavelengths, extrap_lower, extrap_upper)
-        new_wavelengths = np.arange(min_wl, max_wl + 1, 1)
-        
-        # Interpolate to the new wavelength grid
-        interpolated = _interpolate_spectrum(
-            wavelengths, transmissions, new_wavelengths, 
-            extrap_lower, extrap_upper
-        )
+    raw_data = _parse_upload(uploaded_file)
 
-        # Create DataFrame in tall format
-        output_df = pd.DataFrame({
-            'Wavelength': new_wavelengths,
-            'Transmittance': interpolated,
-            'hex_color': meta["hex_color"],
-            'Manufacturer': meta["manufacturer"],
-            'Name': meta["filter_name"],
-            'Filter Number': meta["filter_number"]
-        })
+    wavelengths, transmissions = _paired_columns(raw_data, 0, 1)
 
-        # Generate filename and save
-        base = f"{meta['manufacturer']}_{meta['filter_number']}_{meta['filter_name']}"
-        sanitized = _sanitize_filename(base)
-        suffix = _get_extrapolation_suffix(extrap_lower, extrap_upper)
-        filename = f"{sanitized}{suffix}.tsv"
-        
-        out_dir = Path(OUTPUT_FOLDERS['filter_import']) / meta["manufacturer"]
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / filename
-        
-        return _safe_file_save(output_df, out_path, "Filter")
-        
-    except ValueError as e:
-        # These are validation errors we want to show to the user
-        return False, str(e)
-    except Exception as e:
-        # Unexpected errors - log them for debugging
-        logger.exception("Unexpected error in filter import: %s", e)
-        return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
+    # Validate, cap at 100, clamp negatives, sort, pick the output range and
+    # interpolate via the shared pipeline
+    new_wavelengths, interpolated = _extrapolated_series(
+        wavelengths, transmissions, "transmission", extrap_lower, extrap_upper,
+        clamp_negatives=True,
+        cap_message_fn=lambda m: f"Transmission values seem too high (max: {m:.2f}). Expected 0-100%.",
+        on_negative=lambda m: logger.info(f"Clamped negative transmission values to 0 (min was {m:.3f})"),
+    )
+
+    # Create DataFrame in tall format
+    output_df = pd.DataFrame({
+        'Wavelength': new_wavelengths,
+        'Transmittance': interpolated,
+        'hex_color': meta["hex_color"],
+        'Manufacturer': meta["manufacturer"],
+        'Name': meta["filter_name"],
+        'Filter Number': meta["filter_number"]
+    })
+
+    # Generate filename and save
+    base = f"{meta['manufacturer']}_{meta['filter_number']}_{meta['filter_name']}"
+    sanitized = _sanitize_filename(base)
+    suffix = _get_extrapolation_suffix(extrap_lower, extrap_upper)
+    filename = f"{sanitized}{suffix}.tsv"
+
+    out_dir = Path(OUTPUT_FOLDERS['filter_import']) / meta["manufacturer"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / filename
+
+    return _safe_file_save(output_df, out_path, "Filter")
 
 # ============================================================================
 # ILLUMINANT IMPORT
 # ============================================================================
 
+@_import_errors("illuminant")
 def import_illuminant_from_csv(uploaded_file, description):
     """
     Import illuminant data from a CSV file and save it to the data directory.
-    
+
     Args:
         uploaded_file: The uploaded CSV file
         description: Illuminant description
-        
+
     Returns:
         Tuple of (success, message)
     """
-    try:
-        # Validate inputs
-        if uploaded_file is None:
-            return False, "No file provided for import."
-            
-        if not description or not description.strip():
-            return False, "Description cannot be empty."
-        
-        out_dir = Path(DATA_FOLDERS['illuminants'])
-        out_dir.mkdir(parents=True, exist_ok=True)
+    # Validate inputs
+    if uploaded_file is None:
+        return False, "No file provided for import."
 
-        # Parse CSV data with error handling
-        try:
-            raw_data = _parse_csv(uploaded_file)
-        except ValueError as e:
-            return False, f"CSV parsing failed: {str(e)}"
-            
-        wavelengths = raw_data.iloc[:, 0].dropna().values
-        intensity = raw_data.iloc[:, 1].dropna().values
-        
-        # Validate wavelength data using common utility
-        is_valid, error_msg = _validate_wavelength_data(wavelengths, intensity, "intensity")
-        if not is_valid:
-            return False, error_msg
-        
-        # Validate intensity values
-        if intensity.min() < 0:
-            return False, f"Intensity values cannot be negative (min: {intensity.min():.2f})."
+    if not description or not description.strip():
+        return False, "Description cannot be empty."
 
-        # Interpolate to standard grid
-        intensity_interp = np.interp(INTERP_GRID, wavelengths, intensity, left=0, right=0)
+    out_dir = Path(DATA_FOLDERS['illuminants'])
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Normalize to 0–100 scale
-        max_val = np.max(intensity_interp)
-        if max_val > 0:
-            intensity_rel = np.round((intensity_interp / max_val) * 100, 3)
-        else:
-            intensity_rel = intensity_interp
+    raw_data = _parse_upload(uploaded_file)
 
-        # Create output DataFrame
-        df_out = pd.DataFrame({
-            "Wavelength (nm)": INTERP_GRID,
-            "Relative Power": intensity_rel,
-            "Description": description
-        })
+    wavelengths, intensity = _paired_columns(raw_data, 0, 1)
 
-        # Save file
-        filename = _sanitize_filename(f"illuminant_{description}") + ".tsv"
-        out_path = out_dir / filename
-        
-        return _safe_file_save(df_out, out_path, "Illuminant")
-        
-    except ValueError as e:
-        # These are validation errors we want to show to the user
-        return False, str(e)
-    except Exception as e:
-        # Unexpected errors - log them for debugging
-        logger.exception("Unexpected error in illuminant import: %s", e)
-        return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
+    # Validate, clamp negatives, sort and resample onto the standard grid
+    # normalised so the peak is 100 (shared pipeline)
+    intensity_rel = _resample_channel(
+        wavelengths, intensity, "intensity",
+        normalize_peak=True,
+        on_negative=lambda m: logger.info(f"Clamped negative intensity values to 0 (min was {m:.3f})"),
+    )
+
+    # Create output DataFrame; unmeasured wavelengths are dropped, not filled
+    df_out = pd.DataFrame({
+        "Wavelength (nm)": INTERP_GRID,
+        "Relative Power": intensity_rel,
+        "Description": description
+    })
+    df_out = df_out[df_out["Relative Power"].notna()]
+
+    # Save file
+    filename = _sanitize_filename(f"illuminant_{description}") + ".tsv"
+    out_path = out_dir / filename
+
+    return _safe_file_save(df_out, out_path, "Illuminant")
 
 # ============================================================================
 # QUANTUM EFFICIENCY IMPORT
 # ============================================================================
 
+@_import_errors("QE")
 def import_qe_from_csv(uploaded_file, brand, model):
     """
     Import quantum efficiency data from a CSV file.
-    
+
+    Expected format: X-Y pairs for each channel (6 columns)
+    R_wavelength, R_qe, G_wavelength, G_qe, B_wavelength, B_qe
+
     Args:
         uploaded_file: The uploaded CSV file
         brand: Camera brand
         model: Camera model
-        
+
     Returns:
         Tuple of (success, message)
     """
-    try:
-        # Validate inputs
-        if uploaded_file is None:
-            return False, "No file provided for import."
-            
-        if not brand or not brand.strip():
-            return False, "Camera brand cannot be empty."
-            
-        if not model or not model.strip():
-            return False, "Camera model cannot be empty."
-        
-        # Parse the CSV with error handling
-        try:
-            raw_data = _parse_csv(uploaded_file)
-        except ValueError as e:
-            return False, f"CSV parsing failed: {str(e)}"
-        
-        if raw_data.shape[1] < 4:
-            return False, f"Expected at least 4 columns (Wavelength, R, G, B), found {raw_data.shape[1]} columns."
+    # Validate inputs
+    if uploaded_file is None:
+        return False, "No file provided for import."
 
-        wavelengths = raw_data.iloc[:, 0].dropna().values
-        r_qe = raw_data.iloc[:, 1].dropna().values
-        g_qe = raw_data.iloc[:, 2].dropna().values  
-        b_qe = raw_data.iloc[:, 3].dropna().values
-        
-        # Basic validation - trim to minimum size
-        if wavelengths.size == 0:
-            return False, "Wavelength column is empty or contains no valid numbers."
-            
-        min_size = min(wavelengths.size, r_qe.size, g_qe.size, b_qe.size)
-        if min_size == 0:
-            return False, "One or more QE columns (R, G, B) are empty or contain no valid numbers."
-            
-        wavelengths, r_qe, g_qe, b_qe = wavelengths[:min_size], r_qe[:min_size], g_qe[:min_size], b_qe[:min_size]
-        
-        # Validate wavelength range
-        is_valid, error_msg = _validate_wavelength_data(wavelengths, r_qe, "QE")
-        if not is_valid:
-            return False, error_msg
-        
-        # Validate QE values for each channel
-        for channel, values in [("R", r_qe), ("G", g_qe), ("B", b_qe)]:
-            if values.min() < 0:
-                return False, f"{channel} channel QE values cannot be negative (min: {values.min():.3f})."
-            if values.max() > 100:
-                return False, f"{channel} channel QE values seem too high (max: {values.max():.3f}). Expected 0-1 or 0-100."
+    if not brand or not brand.strip():
+        return False, "Camera brand cannot be empty."
 
-        # Interpolate to standard grid
-        r_interp = np.interp(INTERP_GRID, wavelengths, r_qe)
-        g_interp = np.interp(INTERP_GRID, wavelengths, g_qe)
-        b_interp = np.interp(INTERP_GRID, wavelengths, b_qe)
+    if not model or not model.strip():
+        return False, "Camera model cannot be empty."
 
-        # Create output DataFrame
-        output_df = pd.DataFrame({
-            'Wavelength': INTERP_GRID,
-            'R': r_interp,
-            'G': g_interp,
-            'B': b_interp,
-            'Manufacturer': brand,
-            'Name': model
-        })
+    raw_data = _parse_upload(uploaded_file)
 
-        # Save file
-        filename = f"{_sanitize_filename(brand)}_{_sanitize_filename(model)}_QE.tsv"
-        out_dir = Path(DATA_FOLDERS['qe'])
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / filename
-        
-        return _safe_file_save(output_df, out_path, "QE")
-        
-    except ValueError as e:
-        # These are validation errors we want to show to the user
-        return False, str(e)
-    except Exception as e:
-        # Unexpected errors - log them for debugging
-        logger.exception("Unexpected error in QE import: %s", e)
-        return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
+    if raw_data.shape[1] < 6:
+        return False, f"Expected 6 columns (R_wl, R_qe, G_wl, G_qe, B_wl, B_qe), found {raw_data.shape[1]} columns."
+
+    # X-Y pairs format: R_wl, R_qe, G_wl, G_qe, B_wl, B_qe
+    channels = {}
+    for channel, wl_col, val_col in [('R', 0, 1), ('G', 2, 3), ('B', 4, 5)]:
+        wl, qe = _paired_columns(raw_data, wl_col, val_col)
+        if wl.size == 0 or qe.size == 0:
+            return False, f"{channel} channel has empty wavelength or QE data."
+
+        channels[channel] = _resample_channel(
+            wl, qe, f"{channel} QE",
+            cap_message_fn=lambda m, ch=channel: f"{ch} channel QE values seem too high (max: {m:.3f}). Expected 0-100%.",
+            on_negative=lambda m, ch=channel: logger.info(f"{ch} channel: Clamped negative QE values to 0 (min was {m:.3f})"),
+        )
+
+    # Create output DataFrame with rounded values (0.001 precision)
+    output_df = pd.DataFrame({
+        'Wavelength': INTERP_GRID,
+        'R': channels['R'],
+        'G': channels['G'],
+        'B': channels['B'],
+        'Manufacturer': brand,
+        'Name': model
+    })
+    # Keep only wavelengths where at least one channel was measured;
+    # shorter channels keep blank cells (unknown stays unknown)
+    output_df = output_df[output_df[['R', 'G', 'B']].notna().any(axis=1)]
+
+    # Save file
+    filename = f"{_sanitize_filename(brand)}_{_sanitize_filename(model)}_QE.tsv"
+    out_dir = Path(DATA_FOLDERS['qe'])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / filename
+
+    return _safe_file_save(output_df, out_path, "QE")
+
+
+# ============================================================================
+# FILM SENSITIVITY IMPORT
+# ============================================================================
+
+@_import_errors("film")
+def import_film_from_csv(
+    uploaded_file,
+    manufacturer: str,
+    name: str,
+    film_type: str,
+    iso: str = "",
+    process: str = "",
+    notes: str = "",
+    log_sensitivity: bool = False,
+) -> Tuple[bool, str]:
+    """
+    Import analog film spectral sensitivity data from a CSV file.
+
+    Colour film format (columns): R_wl, R_val, G_wl, G_val, B_wl, B_val
+    B&W film format (columns):    Wavelength, V   (single sensitivity curve)
+
+    Values may be linear 0-100 scale OR log10 sensitivity (log_sensitivity=True).
+    Log sensitivity is converted via 10^x then normalised so peak = 100.
+    """
+    VALID_TYPES = {'color_negative', 'color_slide', 'bw'}
+
+    # --- Input validation ---
+    if uploaded_file is None:
+        return False, "No file provided for import."
+    if not manufacturer or not manufacturer.strip():
+        return False, "Manufacturer cannot be empty."
+    if not name or not name.strip():
+        return False, "Film name cannot be empty."
+    if film_type not in VALID_TYPES:
+        return False, f"Invalid film type '{film_type}'. Must be one of: {', '.join(sorted(VALID_TYPES))}."
+
+    manufacturer = manufacturer.strip()
+    name = name.strip()
+
+    # --- Parse CSV ---
+    raw_data = _parse_upload(uploaded_file)
+
+    is_bw = film_type == 'bw'
+    min_cols = 2 if is_bw else 6
+    if raw_data.shape[1] < min_cols:
+        if is_bw:
+            return False, f"B&W film CSV requires 2 columns (Wavelength, Sensitivity). Found {raw_data.shape[1]}."
+        else:
+            return False, f"Colour film CSV requires 6 columns (R_wl, R_val, G_wl, G_val, B_wl, B_val). Found {raw_data.shape[1]}."
+
+    # --- Resample the channel(s) via the shared pipeline ---
+    if is_bw:
+        wavelengths, sensitivity = _paired_columns(raw_data, 0, 1)
+
+        if log_sensitivity:
+            # Log10 input -> linear, normalised so the peak is 100
+            sensitivity = np.power(10.0, sensitivity)
+            peak = sensitivity.max()
+            if peak > 0:
+                sensitivity = sensitivity / peak * 100.0
+
+        v_interp = _resample_channel(
+            wavelengths, sensitivity, "sensitivity",
+            cap_message_fn=lambda m: f"Sensitivity values seem too high (max: {m:.1f}). Expected 0-100.",
+        )
+        channel_rows = {'Wavelength': INTERP_GRID, 'V': v_interp}
+    else:
+        # 6-column X-Y pair format: R_wl, R_val, G_wl, G_val, B_wl, B_val
+        col_pairs = [('R', 0, 1), ('G', 2, 3), ('B', 4, 5)]
+
+        # For log data, find the global peak across all channels first so
+        # relative channel sensitivity is preserved after normalisation.
+        global_peak = None
+        if log_sensitivity:
+            all_linear = []
+            for _, wl_col, val_col in col_pairs:
+                v = raw_data.iloc[:, val_col].dropna().values
+                all_linear.append(np.power(10.0, v))
+            global_peak = max(a.max() for a in all_linear if len(a) > 0)
+            global_peak = global_peak if global_peak > 0 else 1.0
+
+        channels = {}
+        for ch, wl_col, val_col in col_pairs:
+            wl_ch, vals = _paired_columns(raw_data, wl_col, val_col)
+
+            if log_sensitivity:
+                vals = np.power(10.0, vals) / global_peak * 100.0
+
+            channels[ch] = _resample_channel(
+                wl_ch, vals, f"{ch} sensitivity",
+                cap_message_fn=lambda m, c=ch: f"{c} channel sensitivity values too high (max: {m:.1f}). Expected 0-100.",
+            )
+
+        channel_rows = {'Wavelength': INTERP_GRID, **channels}
+
+    # --- Build TSV with comment headers ---
+    header_lines = [
+        f"# {FILM_TSV_FIELDS['manufacturer']}\t{manufacturer}",
+        f"# {FILM_TSV_FIELDS['name']}\t{name}",
+        f"# {FILM_TSV_FIELDS['type']}\t{film_type}",
+    ]
+    if iso and iso.strip():
+        header_lines.append(f"# {FILM_TSV_FIELDS['iso']}\t{iso.strip()}")
+    if process and process.strip():
+        header_lines.append(f"# {FILM_TSV_FIELDS['process']}\t{process.strip()}")
+    if notes and notes.strip():
+        header_lines.append(f"# {FILM_TSV_FIELDS['notes']}\t{notes.strip()}")
+
+    # --- Save file ---
+    data_df = pd.DataFrame(channel_rows)
+    # Keep only wavelengths with measured data (unknown stays unknown)
+    value_cols = [c for c in data_df.columns if c != 'Wavelength']
+    data_df = data_df[data_df[value_cols].notna().any(axis=1)]
+    filename = f"{_sanitize_filename(manufacturer)}_{_sanitize_filename(name)}_film.tsv"
+    out_dir = Path(DATA_FOLDERS['film'])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / filename
+
+    success, message = _safe_file_save(data_df, out_path, "Film profile", header_lines=header_lines)
+    if success:
+        return True, f"Film profile '{manufacturer} {name}' saved to {out_path}"
+    return False, message
 
 # ============================================================================
 # REFLECTANCE/ABSORPTION IMPORT
 # ============================================================================
 
+@_import_errors("reflectance")
 def import_reflectance_absorption_from_csv(uploaded_file, meta, extrap_lower, extrap_upper):
     """
     Import reflectance or absorption data from a CSV file.
-    
+
     Args:
         uploaded_file: The uploaded CSV file
         meta: Dictionary containing metadata
         extrap_lower: Whether to extrapolate to target minimum
         extrap_upper: Whether to extrapolate to target maximum
-        
+
     Returns:
         Tuple of (success, message)
     """
-    try:
-        # Validate inputs
-        if uploaded_file is None:
-            return False, "No file provided for import."
-            
-        if not meta or not isinstance(meta, dict):
-            return False, "Invalid metadata provided."
-            
-        # Parse the CSV with detailed error handling
-        try:
-            raw_data = _parse_csv(uploaded_file)
-        except ValueError as e:
-            return False, f"CSV parsing failed: {str(e)}"
-            
-        # Process as standard reflectance/absorption file
-        return _import_standard_reflectance(raw_data, meta, extrap_lower, extrap_upper)
-        
-    except ValueError as e:
-        # These are validation errors we want to show to the user
-        return False, str(e)
-    except Exception as e:
-        # Unexpected errors - log them for debugging
-        logger.exception("Unexpected error in reflectance import: %s", e)
-        return False, f"Unexpected error during import: {str(e)}. Please check the file format and try again."
+    # Validate inputs
+    if uploaded_file is None:
+        return False, "No file provided for import."
+
+    if not meta or not isinstance(meta, dict):
+        return False, "Invalid metadata provided."
+
+    # Process as standard reflectance/absorption file
+    raw_data = _parse_upload(uploaded_file)
+    return _import_standard_reflectance(raw_data, meta, extrap_lower, extrap_upper)
 
 
 def _import_standard_reflectance(raw_data, meta, extrap_lower, extrap_upper):
     """Import standard 2-column reflectance data."""
-    wavelengths = raw_data.iloc[:, 0].dropna().values
-    values = raw_data.iloc[:, 1].dropna().values
+    wavelengths, values = _paired_columns(raw_data, 0, 1)
 
-    # Validate wavelength data using common utility
-    is_valid, error_msg = _validate_wavelength_data(wavelengths, values, "reflectance")
-    if not is_valid:
-        return False, error_msg
-
-    # Sort by wavelength
-    sort_idx = np.argsort(wavelengths)
-    wavelengths = wavelengths[sort_idx] 
-    values = values[sort_idx]
-
-    # Determine wavelength range
-    min_wl, max_wl = _get_wavelength_range(wavelengths, extrap_lower, extrap_upper)
-    new_wavelengths = np.arange(min_wl, max_wl + 1, 1)
-    
-    # Interpolate
-    interpolated = _interpolate_spectrum(
-        wavelengths, values, new_wavelengths,
-        extrap_lower, extrap_upper
+    # Validate, sort, pick the output range and interpolate via the shared
+    # filter pipeline
+    new_wavelengths, interpolated = _extrapolated_series(
+        wavelengths, values, "reflectance", extrap_lower, extrap_upper
     )
 
-    # Normalize reflectance units: if values look like percents (>1.5), convert to fraction [0..1]
-    if np.nanmax(interpolated) > 1.5:
-        interpolated = interpolated / 100.0
-
-    interpolated = np.round(interpolated, 3)
-
-    # Create DataFrame - metadata only in first row (efficient: no wasted arrays)
+    # The value column is always 'Reflectance': that is the column name the
+    # reflector loader (services/data.py) requires, so 'Absorption' imports
+    # stay loadable too (the chosen data_type is kept for the status message).
     data_type = meta.get("data_type", "Reflectance")
     name = meta.get("name", "Unknown")
     description = meta.get("description", "")
-    
+
+    # Create DataFrame - metadata only in first row (efficient: no wasted arrays)
     output_df = pd.DataFrame({
         'Wavelength': new_wavelengths,
-        data_type: interpolated,
+        'Reflectance': interpolated,
         'Name': [name] + [""] * (len(new_wavelengths) - 1),
         'Description': [description] + [""] * (len(new_wavelengths) - 1)
     })
@@ -941,17 +726,12 @@ def _save_reflectance_file(df, meta, extrap_lower, extrap_upper, data_type):
     sanitized = _sanitize_filename(base_name)
     suffix = _get_extrapolation_suffix(extrap_lower, extrap_upper)
     filename = f"{sanitized}{suffix}.tsv"
-    
+
     folder = "plant" if "plant" in meta.get("category", "").lower() else "other"
     out_dir = Path(DATA_FOLDERS['reflectors']) / folder
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / filename
-    
+
     # Save the file
     success, message = _safe_file_save(df, out_path, data_type)
     return success, message
-
-# ============================================================================
-# All import functions are defined above and can be imported individually
-# The UI components have been moved to views/forms.py
-# ============================================================================

@@ -1,105 +1,77 @@
 """
 Mathematical calculations for FS FilterLab.
 
-This module provides all mathematical computation functions for:
-- Transmission calculations and filtering
-- Color processing and RGB response
-- Channel mixing transformations
-- Metrics computation and formatting
-- White balance calculations
-- Deviation analysis
+Stack/metrics/surface math on top of the pure spectral core
+(:mod:`services.spectra`) plus color identity helpers.  Presentation-only
+string formatting lives in the presenter layer.
 """
 # Third-party imports
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional
 
 # Local imports
-from models.constants import EPSILON, DEFAULT_WB_GAINS, INTERP_GRID
+from models.constants import DEFAULT_HEX_COLOR, EPSILON, INTERP_GRID
 from models.core import FilterCollection, ChannelMixerSettings
-from services.channel_mixer import apply_channel_mixing_to_responses, apply_channel_mixing_to_colors
-
-# Constants for calculations
-MIN_RGB_VALUE = 1/255  # Minimum RGB value to prevent complete black pixels
+from services.spectra import (
+    apply_channel_mixing_to_colors, combine_transmission,
+    integrated_response, is_valid_spectrum
+)
 
 
 # ============================================================================
 # TRANSMISSION CALCULATIONS
 # ============================================================================
 
-def _compute_combined_transmission(transmission_values: List[np.ndarray], combine: bool = True) -> np.ndarray:
-    """
-    Compute combined transmission from multiple filter transmissions.
-    
-    All transmission values are expected to be in fractional scale (0-1).
-    Filter combination uses natural multiplication which preserves this scale.
-    
-    Args:
-        transmission_values: List of transmission arrays (each 0-1 scale)
-        combine: Whether to combine the transmissions (multiply them)
-
-    Returns:
-        Combined transmission in fractional scale (0-1)
-    """
-    if not transmission_values:
-        return np.ones_like(INTERP_GRID)
-        
-    if combine and len(transmission_values) > 1:
-        stack = np.array(transmission_values)
-        combined = np.nanprod(stack, axis=0)
-        combined[np.any(np.isnan(stack), axis=0)] = np.nan
-        return combined
-    
-    return transmission_values[0]
-
-
 def compute_filter_transmission(
-    filter_indices: List[int], 
+    filter_indices: List[int],
     filter_matrix: np.ndarray
-) -> Tuple[np.ndarray, str, Optional[np.ndarray]]:
+) -> Tuple[np.ndarray, str]:
     """
-    Compute filter transmission from filter indices.
-    
-    Args:
-        filter_indices: List of filter indices
-        filter_matrix: Matrix of filter transmissions
-    
-    Returns:
-        Tuple of (transmission, label, combined_transmission)
+    Active stack curve and its display label ("No Filter"/"Single"/"Combined").
+
+    The array is always the curve downstream code should use: identity for an
+    empty stack, the single filter row, or the EPSILON-clipped combination.
     """
     if not filter_indices:
-        return np.ones_like(INTERP_GRID), "No Filter", None
-    
+        return np.ones_like(INTERP_GRID), "No Filter"
+
     if len(filter_indices) > 1:
         transmissions = [filter_matrix[idx] for idx in filter_indices]
-        combined = _compute_combined_transmission(transmissions, combine=True)
+        combined = combine_transmission(transmissions)
         combined = np.clip(combined, EPSILON, 1.0)
-        return combined, "Combined", combined
-    
-    transmission = filter_matrix[filter_indices[0]]
-    return transmission, "Single", None
+        return combined, "Combined"
+
+    return filter_matrix[filter_indices[0]], "Single"
 
 
-def compute_active_transmission(
+def effective_transmission(
     selected_filters: List[str],
-    selected_indices: List[int],
-    filter_matrix: np.ndarray
+    filter_multipliers: Dict[str, int],
+    filter_collection: FilterCollection
 ) -> np.ndarray:
     """
-    Compute the active transmission based on selected filters.
-    
+    Current stack transmission on the interpolation grid (ones if empty).
+
+    Single shared derivation of the live stack for the action layer and for
+    every presenter that needs transmission (surfaces, reflectors shelf),
+    so presenters stay read-only instead of trusting a render-time cache.
+
     Args:
         selected_filters: List of selected filter display names
-        selected_indices: List of corresponding filter indices
-        filter_matrix: Matrix of filter transmissions
-    
+        filter_multipliers: Dictionary mapping filter names to multiplier counts
+        filter_collection: Collection of available filters
+
     Returns:
-        Active transmission array
+        Combined transmission array over INTERP_GRID
     """
-    if selected_filters and selected_indices and filter_matrix is not None:
-        transmissions = [filter_matrix[idx] for idx in selected_indices]
-        return _compute_combined_transmission(transmissions, combine=True)
-    
-    return np.ones_like(INTERP_GRID)  # Identity transmission (no filter effect)
+    indices = compute_selected_filter_indices(
+        selected_filters, filter_multipliers, filter_collection
+    )
+    if indices and filter_collection.filter_matrix is not None:
+        transmissions = [filter_collection.filter_matrix[idx] for idx in indices]
+        return combine_transmission(transmissions)
+
+    return np.ones_like(INTERP_GRID)
 
 
 def compute_selected_filter_indices(
@@ -107,17 +79,7 @@ def compute_selected_filter_indices(
     filter_multipliers: Dict[str, int],
     filter_collection: FilterCollection
 ) -> List[int]:
-    """
-    Compute indices of selected filters with their multipliers.
-    
-    Args:
-        selected_filters: List of selected filter display names
-        filter_multipliers: Dictionary mapping filter names to their multiplier counts
-        filter_collection: Collection of available filters
-    
-    Returns:
-        List of filter indices
-    """
+    """Filter matrix indices for the selected display names, repeated by multiplier."""
     if not selected_filters:
         return []
     
@@ -133,26 +95,6 @@ def compute_selected_filter_indices(
         selected_indices.extend([idx] * count)
         
     return selected_indices
-
-
-def _is_valid_transmission(transmission: np.ndarray) -> bool:
-    """
-    Check if transmission array is valid for computation.
-    
-    Args:
-        transmission: Transmission values to check
-        
-    Returns:
-        True if transmission is valid, False otherwise
-    """
-    try:
-        return (transmission is not None and 
-                hasattr(transmission, '__len__') and
-                len(transmission) > 0 and 
-                np.any(np.isfinite(transmission)))
-    except (TypeError, ValueError):
-        # Handle cases where transmission is not array-like or has invalid shape
-        return False
 
 
 # ============================================================================
@@ -203,10 +145,6 @@ def compute_effective_stops(
     if np.all(photometric_weights == 0):
         return np.nan, np.nan
     
-    # Defensive: Check if arrays are empty before averaging
-    if clipped_trans.size == 0 or photometric_weights.size == 0:
-        return np.nan, np.nan
-    
     # Weighted average transmission by photon flux
     avg_trans = np.average(clipped_trans, weights=photometric_weights)
     
@@ -217,196 +155,6 @@ def compute_effective_stops(
     effective_stops = -np.log2(avg_trans)
     
     return avg_trans, effective_stops
-
-
-# ============================================================================
-# COLOR PROCESSING AND RGB RESPONSE
-# ============================================================================
-
-def compute_rgb_response(
-    transmission: np.ndarray,
-    quantum_efficiency: Dict[str, np.ndarray],
-    white_balance_gains: Dict[str, float],
-    visible_channels: Dict[str, bool],
-    channel_mixer: Optional[ChannelMixerSettings] = None
-) -> Tuple[Dict[str, np.ndarray], np.ndarray, float]:
-    """
-    Compute RGB response from transmission and quantum efficiency.
-    
-    Args:
-        transmission: Transmission values
-        quantum_efficiency: Dictionary of quantum efficiency values by channel
-        white_balance_gains: Dictionary of white balance gains by channel
-        visible_channels: Dictionary of channel visibility flags
-        channel_mixer: Optional channel mixer settings for RGB manipulation
-    
-    Returns:
-        Tuple of (responses_by_channel, rgb_matrix, max_response)
-    """
-    # Create empty arrays for responses
-    responses = {}
-    rgb_stack = []
-    
-    # Check for valid transmission data - early exit if invalid
-    if not _is_valid_transmission(transmission) or not quantum_efficiency:
-        # Return zero arrays with correct dimensions
-        sample_size = len(next(iter(quantum_efficiency.values()))) if quantum_efficiency else len(INTERP_GRID)
-        zero_array = np.zeros(sample_size)
-        for channel in ['R', 'G', 'B']:
-            responses[channel] = zero_array
-            rgb_stack.append(zero_array)
-        return responses, np.stack(rgb_stack, axis=1) if rgb_stack else np.array([]), 0.0
-
-    # Process each color channel
-    max_response = 0.0
-    for channel in ['R', 'G', 'B']:
-        qe_curve = quantum_efficiency.get(channel)
-        
-        # Create zero response if no QE data or size mismatch
-        if qe_curve is None or len(qe_curve) != len(transmission):
-            responses[channel] = np.zeros_like(transmission)
-        else:
-            # Calculate weighted response with white balance
-            gain = max(white_balance_gains.get(channel, 1.0), EPSILON)
-            weighted = np.nan_to_num(transmission * qe_curve) / gain * 100
-            max_response = max(max_response, np.nanmax(weighted))
-            
-            # Apply channel visibility
-            responses[channel] = weighted if visible_channels.get(channel, True) else np.zeros_like(weighted)
-            
-        rgb_stack.append(responses[channel])
-    
-    # Apply channel mixing if enabled
-    if channel_mixer is not None and channel_mixer.enabled:
-        responses = apply_channel_mixing_to_responses(responses, channel_mixer)
-        # Update rgb_stack with mixed responses
-        rgb_stack = [responses['R'], responses['G'], responses['B']]
-
-    # Create RGB matrix and normalize
-    rgb_matrix = np.stack(rgb_stack, axis=1)
-    max_val = np.nanmax(rgb_matrix)
-    
-    if max_val > 0:
-        rgb_matrix = rgb_matrix / max_val
-        
-    # Clip to valid range
-    rgb_matrix = np.clip(rgb_matrix, MIN_RGB_VALUE, 1.0)
-
-    return responses, rgb_matrix, max_response
-
-
-def compute_white_balance_gains(
-    transmission: np.ndarray,
-    quantum_efficiency: Dict[str, np.ndarray],
-    illuminant: np.ndarray
-) -> Dict[str, float]:
-    """
-    Compute white balance gains from transmission, QE, and illuminant.
-    
-    Args:
-        transmission: Transmission values
-        quantum_efficiency: Dictionary of quantum efficiency values by channel
-        illuminant: Illuminant curve
-    
-    Returns:
-        Dictionary of white balance gains by channel
-    """
-    # Early exit for invalid data
-    if not _is_valid_transmission(transmission):
-        return DEFAULT_WB_GAINS.copy()
-        
-    # Calculate response per channel
-    rgb_resp = {}
-    for ch in ['R', 'G', 'B']:
-        qe_curve = quantum_efficiency.get(ch)
-        if qe_curve is None:
-            rgb_resp[ch] = np.nan
-            continue
-        
-        # Find valid data points
-        valid = ~np.isnan(transmission) & ~np.isnan(qe_curve) & ~np.isnan(illuminant)
-        if not valid.any():
-            rgb_resp[ch] = np.nan
-            continue
-        
-        # Calculate total response for this channel
-        rgb_resp[ch] = np.nansum(
-            transmission[valid] * qe_curve[valid] * illuminant[valid]
-        )
-
-    # Normalize gains using green as reference
-    g_response = rgb_resp.get('G', np.nan)
-    if not np.isnan(g_response) and g_response > EPSILON:
-        # Ensure all responses are valid before creating the ratio dictionary
-        return {
-            ch: rgb_resp.get(ch, 0.0) / g_response if not np.isnan(rgb_resp.get(ch, 0.0)) else 1.0
-            for ch in ['R', 'G', 'B']
-        }
-    
-    # Fall back to defaults if we can't normalize
-    return DEFAULT_WB_GAINS.copy()
-
-
-def compute_white_balance_gains_from_surface(
-    reflector: np.ndarray,
-    transmission: np.ndarray,
-    quantum_efficiency: Dict[str, np.ndarray],
-    illuminant: np.ndarray
-) -> Dict[str, float]:
-    """
-    Compute white balance gains using a selected surface as reference.
-    
-    This simulates field white balancing where photographers white balance
-    on a specific surface (e.g., foliage in IR photography).
-    
-    Args:
-        reflector: Reflectance spectrum of the reference surface
-        transmission: Combined filter transmission values
-        quantum_efficiency: Dictionary of quantum efficiency values by channel
-        illuminant: Illuminant curve
-    
-    Returns:
-        Dictionary of white balance gains by channel
-    """
-    # Early exit for invalid data
-    if not _is_valid_transmission(transmission):
-        return DEFAULT_WB_GAINS.copy()
-        
-    # Calculate RGB response for this surface under current conditions
-    rgb_resp = {}
-    for ch in ['R', 'G', 'B']:
-        qe_curve = quantum_efficiency.get(ch)
-        if qe_curve is None:
-            rgb_resp[ch] = np.nan
-            continue
-        
-        # Find valid data points
-        valid = (~np.isnan(reflector) & ~np.isnan(transmission) & 
-                ~np.isnan(qe_curve) & ~np.isnan(illuminant))
-        if not valid.any():
-            rgb_resp[ch] = np.nan
-            continue
-        
-        # Calculate channel response: reflector * transmission * QE * illuminant
-        rgb_resp[ch] = np.nansum(
-            reflector[valid] * 
-            transmission[valid] * 
-            qe_curve[valid] * 
-            illuminant[valid]
-        )
-
-    # Normalize gains using green as reference
-    g_response = rgb_resp.get('G', np.nan)
-    if not np.isnan(g_response) and g_response > EPSILON:
-        # Create white balance gains that will make this surface appear neutral
-        gains = {
-            ch: rgb_resp.get(ch, 0.0) / g_response if not np.isnan(rgb_resp.get(ch, 0.0)) else 1.0
-            for ch in ['R', 'G', 'B']
-        }
-        return gains
-    
-    # Fall back to defaults if we can't normalize
-    return DEFAULT_WB_GAINS.copy()
 
 
 
@@ -423,125 +171,255 @@ def compute_reflector_color(
     white_balance_gains: Optional[Dict[str, float]] = None
 ) -> np.ndarray:
     """
-    Compute reflector color from reflector, transmission, QE, and illuminant.
-    
-    Args:
-        reflector: Reflector spectrum
-        transmission: Transmission values
-        quantum_efficiency: Dictionary of quantum efficiency values by channel
-        illuminant: Illuminant curve
-        white_balance_gains: Pre-computed white balance gains (single source of truth)
-        channel_mixer: Optional channel mixer settings for color manipulation
-    
-    Returns:
-        RGB color as numpy array [R, G, B]
+    Linear sRGB [R, G, B] of a reflector under the current conditions:
+    per-channel integration (reflector x transmission x QE x illuminant),
+    division by white balance gains, then optional channel mixing.
     """
     # Early exit for invalid data
-    if not _is_valid_transmission(transmission) or reflector is None:
+    if not is_valid_spectrum(transmission) or reflector is None:
         return np.zeros(3)
 
-    # Process each channel
-    rgb_resp = {}
-    for ch in ['R', 'G', 'B']:
-        qe_curve = quantum_efficiency.get(ch)
-        if qe_curve is None:
-            rgb_resp[ch] = 0.0
-            continue
-
-        # Find valid data points
-        valid = (~np.isnan(transmission) & ~np.isnan(qe_curve) & 
-                ~np.isnan(illuminant) & ~np.isnan(reflector))
-                
-        if not valid.any():
-            rgb_resp[ch] = 0.0
-            continue
-
-        # Calculate channel response
-        rgb_resp[ch] = np.nansum(
-            reflector[valid] * 
-            transmission[valid] * 
-            qe_curve[valid] * 
-            illuminant[valid]
-        )
-
-    # Apply white balance with safety against division by zero
+    # Per channel: integrate reflector x transmission x QE x illuminant
+    # (NaN points excluded), then divide by the white balance gain.
     rgb_values = np.zeros(3)
     for i, ch in enumerate(['R', 'G', 'B']):
-        # Handle case where white_balance_gains is None
-        if white_balance_gains is not None:
-            wb_gain = white_balance_gains.get(ch, 1.0)
-        else:
-            wb_gain = 1.0
-        
+        qe_curve = quantum_efficiency.get(ch)
+        if qe_curve is None:
+            continue
+
+        response = integrated_response(transmission, qe_curve, illuminant, reflector)
+        channel_response = 0.0 if np.isnan(response) else response
+
+        wb_gain = white_balance_gains.get(ch, 1.0) if white_balance_gains is not None else 1.0
         if wb_gain > EPSILON:
-            rgb_values[i] = rgb_resp.get(ch, 0.0) / wb_gain
+            rgb_values[i] = channel_response / wb_gain
         else:
-            rgb_values[i] = rgb_resp.get(ch, 0.0)
-    
+            rgb_values[i] = channel_response
+
     # Apply channel mixing if enabled
     if channel_mixer is not None and channel_mixer.enabled:
         rgb_values = apply_channel_mixing_to_colors(rgb_values, channel_mixer)
-            
+
     return rgb_values
 
 
+
 # ============================================================================
-# FORMATTING FUNCTIONS
+# EXPOSURE-REFERENCED SURFACE COLORS
 # ============================================================================
 
-def format_transmission_metrics(
-    trans: np.ndarray, 
-    label: str, 
-    avg_trans: float, 
-    effective_stops: float
-) -> Dict[str, str]:
+def compute_white_reference_color(
+    transmission: np.ndarray,
+    quantum_efficiency: Dict[str, np.ndarray],
+    illuminant: np.ndarray,
+    white_balance_gains: Optional[Dict[str, float]] = None,
+    channel_mixer: Optional[ChannelMixerSettings] = None
+) -> np.ndarray:
     """
-    Format transmission metrics for display.
-    
-    Args:
-        trans: Transmission values
-        label: Label for the transmission
-        avg_trans: Average transmission (0-1)
-        effective_stops: Effective light loss in stops
-        
+    Sensor response to a perfect diffuse reflector (reflectance = 1.0 at every
+    wavelength) under the current stack x illuminant x sensor x WB (+ mixer).
+
+    This is the shared white anchor for surface color previews: the exposure
+    is defined so a perfect white just saturates.  Physically, a surface's
+    display color is its response divided by this anchor.
+
     Returns:
-        Dictionary containing formatted metrics
+        RGB color as numpy array [R, G, B] (unnormalized integrated response)
     """
-    return {
-        "label": label,
-        "effective_stops": f"{effective_stops:.2f}",
-        "avg_transmission_pct": f"{avg_trans * 100:.1f}%"
-    }
+    ones = np.ones_like(INTERP_GRID)
+    return compute_reflector_color(
+        ones, transmission, quantum_efficiency, illuminant,
+        channel_mixer=channel_mixer, white_balance_gains=white_balance_gains,
+    )
 
 
-def format_white_balance_data(
-    white_balance_gains: Dict[str, float],
-    selected_filters: List[str]
-) -> Dict[str, Any]:
+def reference_color_to_display(
+    surface_rgb: np.ndarray, white_ref_rgb: np.ndarray
+) -> np.ndarray:
     """
-    Format white balance data for display.
-    
-    Args:
-        white_balance_gains: Dictionary of white balance gains by channel
-        selected_filters: List of selected filter names
-        
+    White-referenced linear display color: ``clip(surface / white_ref, 0, 1)``.
+
+    A surface whose response equals the white anchor renders exactly white; a
+    near-black surface stays near-black (fixing the per-channel auto-exposure
+    bug that amplified every swatch's brightest channel to 1.0).
+
     Returns:
-        Dictionary with formatted white balance data
+        Linear RGB in [0, 1] per channel.
     """
-    # Calculate relative channel intensities (inverted gains)
-    intensities = {
-        k: (1.0 / v if v != 0 else 0.0)
-        for k, v in white_balance_gains.items()
-    }
-    
-    # Add a note if no filters are selected
-    has_filters = len(selected_filters) > 0
-    
-    return {
-        "has_filters": has_filters,
-        "intensities": {
-            "R": f"{intensities['R']:.3f}",
-            "G": f"{intensities['G']:.3f}",
-            "B": f"{intensities['B']:.3f}"
-        }
-    }
+    surface = np.asarray(surface_rgb, dtype=float)
+    white = np.asarray(white_ref_rgb, dtype=float)
+    safe_white = np.where(white > EPSILON, white, 1.0)
+    return np.clip(surface / safe_white, 0.0, 1.0)
+
+
+# ============================================================================
+# CAMERA-LOOK RENDER MODE (filmic tone curve + chroma, pre-sRGB encoding)
+# ============================================================================
+
+# Chroma boost applied around Rec.709 luma before the tone curve.
+CAMERA_LOOK_CHROMA_BOOST = 1.15
+
+
+def apply_camera_look(linear_rgb: np.ndarray, invert: bool = False) -> np.ndarray:
+    """
+    "Camera look" render of a white-referenced linear color: optional
+    negative-film inversion (``1 - x`` for ``invert_for_display`` profiles),
+    a chroma boost around luma, then a smoothstep filmic S-curve per channel.
+
+    Post-ratio / pre-sRGB: input and output are linear RGB in [0, 1].  The
+    S-curve maps 0, 0.5 and 1 onto themselves, so neutrals keep their tone
+    while midtone contrast increases — the default-on Scene Preview look.
+    """
+    rgb = np.clip(np.asarray(linear_rgb, dtype=float), 0.0, 1.0)
+    if invert:
+        rgb = 1.0 - rgb
+    luma = float(np.dot(rgb, (0.2126, 0.7152, 0.0722)))
+    rgb = luma + (rgb - luma) * CAMERA_LOOK_CHROMA_BOOST
+    return np.clip(rgb * rgb * (3.0 - 2.0 * rgb), 0.0, 1.0)
+
+
+def srgb_encode(linear_rgb: np.ndarray) -> np.ndarray:
+    """
+    IEC 61966-2-1 sRGB transfer function (vectorized), linear [0,1] in,
+    encoded [0,1] out.  Browsers assume sRGB — without this encoding
+    white-referenced midtones render too dark.
+    """
+    lin = np.clip(np.asarray(linear_rgb, dtype=float), 0.0, 1.0)
+    encoded = np.where(
+        lin <= 0.0031308,
+        lin * 12.92,
+        1.055 * np.power(lin, 1.0 / 2.4) - 0.055,
+    )
+    # Exactly white stays exactly white (1.055 - 0.055 loses a ULP in float).
+    return np.where(lin >= 1.0, 1.0, encoded)
+
+
+def srgb_to_hex(linear_rgb: np.ndarray) -> str:
+    """sRGB-encode linear RGB and format it as a lowercase '#rrggbb' string."""
+    encoded = srgb_encode(linear_rgb)
+    return "#{:02x}{:02x}{:02x}".format(
+        *(int(round(float(c) * 255)) for c in encoded)
+    )
+
+
+# ============================================================================
+# FILTER IDENTITY COLORS (spectrum-derived swatch fallback)
+# ============================================================================
+
+def _is_valid_hex_color(text: str) -> bool:
+    """True for exact '#RRGGBB' strings (6 hex digits)."""
+    if not isinstance(text, str) or not text.startswith("#") or len(text) != 7:
+        return False
+    try:
+        int(text[1:], 16)
+        return True
+    except ValueError:
+        return False
+
+
+def _cmf_lobe(
+    wavelengths: np.ndarray, mu: float, sigma_low: float, sigma_high: float
+) -> np.ndarray:
+    """Piecewise Gaussian lobe: sigma_low below mu, sigma_high above."""
+    sigma = np.where(wavelengths < mu, sigma_low, sigma_high)
+    return np.exp(-((wavelengths - mu) ** 2) / (2.0 * sigma ** 2))
+
+
+# CIE-1931 XYZ -> linear sRGB conversion matrix (D65 reference white)
+_XYZ_TO_LINEAR_SRGB = np.array([
+    [3.2406255, -1.5372080, -0.4986286],
+    [-0.9689307, 1.8757561, 0.0415175],
+    [0.0557101, -0.2040211, 1.0569959],
+])
+
+
+def _cie1931_xyz(wavelengths: np.ndarray) -> np.ndarray:
+    """
+    Analytic CIE-1931 2-deg color matching functions at single wavelengths
+    (multi-lobe Gaussian fit; Wyman, Sloan & Shirley, JCGT 2013) as an
+    (..., 3) array of (X, Y, Z).
+    """
+    wl = np.asarray(wavelengths, dtype=float)
+    x_bar = (
+        1.056 * _cmf_lobe(wl, 599.8, 37.9, 31.0)
+        + 0.362 * _cmf_lobe(wl, 442.0, 16.0, 26.7)
+        - 0.065 * _cmf_lobe(wl, 501.1, 20.4, 26.2)
+    )
+    y_bar = (
+        0.821 * _cmf_lobe(wl, 568.8, 46.9, 40.5)
+        + 0.286 * _cmf_lobe(wl, 530.9, 16.3, 31.1)
+    )
+    z_bar = (
+        1.217 * _cmf_lobe(wl, 437.0, 11.8, 36.0)
+        + 0.681 * _cmf_lobe(wl, 459.0, 26.0, 13.8)
+    )
+    return np.stack([x_bar, y_bar, z_bar], axis=-1)
+
+
+def _spectral_to_linear_srgb(
+    transmission: np.ndarray, wavelengths: np.ndarray
+) -> np.ndarray:
+    """
+    XYZ of a transmission curve under equal-energy white via _cie1931_xyz,
+    converted to linear sRGB.  Unnormalized output.
+    """
+    t = np.asarray(transmission, dtype=float)
+    xyz = np.trapezoid(t[:, np.newaxis] * _cie1931_xyz(wavelengths), wavelengths, axis=0)
+    return _XYZ_TO_LINEAR_SRGB @ xyz
+
+
+def filter_display_color(transmission: Optional[np.ndarray], hex_color: str = "") -> str:
+    """
+    Identity color for a filter: metadata hex when valid, spectrum otherwise.
+
+    Swatches and curve strokes trust the file's 'Hex Color' metadata when it is
+    a valid '#RRGGBB' — except DEFAULT_HEX_COLOR, which is the loader's
+    "no color data" sentinel, indistinguishable from real metadata once
+    substituted.  Many manufacturers ship no color metadata at all, so the
+    fallback derives the color from the visible-band transmission (CIE-1931
+    observer, equal-energy white, peak-normalized, sRGB-encoded) — a vividly
+    blue filter previews blue instead of the neutral-gray default.  Spectra
+    with effectively no visible light (UV/IR-only, all-zero), and missing or
+    wrong-sized curves, fall back to DEFAULT_HEX_COLOR.
+    """
+    text = str(hex_color or "").strip()
+    if _is_valid_hex_color(text) and text.upper() != DEFAULT_HEX_COLOR.upper():
+        return text
+    if transmission is None:
+        return DEFAULT_HEX_COLOR
+    t = np.asarray(transmission, dtype=float)
+    if t.shape != INTERP_GRID.shape or not np.any(np.isfinite(t)):
+        return DEFAULT_HEX_COLOR
+    t = np.where(np.isfinite(t), t, 0.0)
+    visible = (INTERP_GRID >= 380) & (INTERP_GRID <= 730)
+    linear = np.clip(_spectral_to_linear_srgb(t[visible], INTERP_GRID[visible]), 0.0, None)
+    peak = float(linear.max())
+    if peak <= EPSILON:
+        return DEFAULT_HEX_COLOR
+    return srgb_to_hex(linear / peak)
+
+
+# ============================================================================
+# HUMAN-VISION SPECTRUM COLORS (single wavelengths → perceived color)
+# ============================================================================
+
+def spectral_locus_linear_srgb(wavelengths: np.ndarray) -> np.ndarray:
+    """
+    Linear sRGB color of individual wavelengths (same CIE-1931 2-deg observer
+    as _spectral_to_linear_srgb), out-of-gamut negatives clipped to 0.
+
+    Magnitude carries the observer's ȳ(λ).  For an explicit V(λ) brightness
+    profile, normalize the locus to its own peak first (hue/chroma), then
+    scale by photopic_relative_brightness.
+    """
+    return np.clip(_cie1931_xyz(wavelengths) @ _XYZ_TO_LINEAR_SRGB.T, 0.0, None)
+
+
+def photopic_relative_brightness(wavelengths: np.ndarray) -> np.ndarray:
+    """
+    Photopic brightness ȳ(λ) of the same fit, normalized to its maximum over
+    the passed range — pass the full visible band so 1.0 lands on the
+    brightest wavelength (~555 nm).
+    """
+    y_bar = _cie1931_xyz(wavelengths)[..., 1]
+    return y_bar / y_bar.max()

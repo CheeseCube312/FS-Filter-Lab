@@ -8,13 +8,18 @@ Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Pr
 
 - Combine multiple filters and see the resulting transmission
 - View and compare RGB channel responses
-- Analyze how filters affect different cameras and light sources
-- Import your own filter, QE, or illuminant data (TSV format)
+- Analyze how filters affect different cameras, film stocks, and light sources
+- Film emulation targets: slide, color negative, and B&W film profiles
+- Import your own filter, QE, film, or illuminant data (TSV format)
 - Export analysis as PNG reports
 - Advanced search: filter by manufacturer, color, or transmission at specific wavelengths
-- Surface reflector library with default curated lists
 - Fast caching system for instant data loading
 - Interactive Plotly charts with zoom and hover details
+
+Note: the reflectance workflow (Reflectors shelf, Scene Preview card, surface
+white-balance references) ships disabled in this build — gated behind
+`FEATURES["reflectance"]` in `program/models/constants.py`; flip the flag to
+restore it.
 
 ## Quick Start
 
@@ -24,9 +29,9 @@ Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Pr
 
 ### Install
 
-1. Clone this repository (with submodules for filter data):
+1. Clone this repository (the spectral dataset is tracked in-repo — no submodules):
    ```bash
-   git clone --recursive https://github.com/YourUsername/FS-Filter-Lab.git
+   git clone https://github.com/YourUsername/FS-Filter-Lab.git
    ```
    Or download the latest Release
 2. Install dependencies:
@@ -43,19 +48,18 @@ Credit: 21.09.2025 Refactor based on 01luna's fork. Contains Vegetation Color Pr
 
 ## How to Use
 
-1. **Select filters** from the sidebar dropdown
-2. **Adjust stack counts** if you want multiple instances of a filter
-3. **Pick a camera QE profile** and an **illuminant** (light source)
+1. **Select filters** from the Filters shelf (right drawer)
+2. **Adjust stack counts** if you want multiple instances of a filter (sidebar stack editor)
+3. **Pick a receiver profile** (camera QE or film stock) and an **illuminant** (light source)
 4. **View results**: transmission charts, RGB response curves, color metrics
-5. **Add reflectors** to see how surfaces appear under your filter stack
-6. **Export PNG reports** for documentation
+5. **Export PNG reports** for documentation
 
 ### Advanced Features
-- **Advanced Filter Search**: Filter by manufacturer, hex color, or transmission at specific wavelengths with live sparkline previews
-- **Advanced Reflector Search**: Filter by organization, package, or target type
+- **Advanced Filter Search**: Filter by manufacturer, hex color, or transmission at specific wavelengths with live sparkline previews — results update live, with a per-row detail dialog and Show-more paging
+- **My Filters Manager**: Curate your own filter collection with an "Owned only" toggle (quick and advanced search both honor it)
 - **Channel Mixer**: Apply custom RGB channel mixing matrices
-- **Import Data**: Add your own filters and reflectors via the import dialog (TSV or ECOSIS CSV)
-- **Cache Management**: Use "Rebuild Cache" if you add new data files manually
+- **Import Data**: Add your own filters, illuminants, camera QE curves, or film profiles from the import cards on the Data tab
+- **Automatic Cache**: Cached data rebuilds silently whenever data files change — nothing to manage
 
 ## Project Structure
 
@@ -68,12 +72,15 @@ FS-FilterLab/
 └── program/
     ├── app.py            # NiceGUI application entry point
     ├── requirements.txt  # Python dependencies
+    ├── TECHNICAL.md      # Developer technical overview
     ├── models/           # Data structures and constants
-    ├── services/         # Business logic (calculations, data loading, state)
+    ├── services/         # Business logic (calculations, presenter, data loading, state)
     ├── views/            # NiceGUI UI components
-    ├── data/             # Spectral data files (git submodule)
+    ├── tests/            # unittest suite
+    ├── data/             # Spectral data files (tracked in this repo)
     │   ├── filters_data/
     │   ├── QE_data/
+    │   ├── film_data/
     │   ├── illuminants/
     │   └── reflectors/
     ├── cache/            # Auto-generated (gitignored)
@@ -83,9 +90,10 @@ FS-FilterLab/
 ## Basic Troubleshooting
 
 - **Missing dependencies**: Delete `.venv/`, then run `install.bat` to reinstall
-- **Data not loading**: Use "Rebuild Cache" in sidebar, or manually delete `program/cache/`
+- **Data not loading**: Delete the `program/cache/` folder — it rebuilds automatically on the next start
 - **Port already in use**: Edit `app.py` and change the port in `ui.run(port=8080)`
-- **Submodule data missing**: Run `git submodule update --init --recursive`
+- **App still running after closing the tab**: Stop the server with `Ctrl+C` in its console (or close the console window)
+- **Missing/incomplete data**: `program/data/` is tracked in the repo — re-clone or copy the full folder; the startup log line `Loaded N filters from M manufacturer(s)` shows exactly what was found
 
 ## License
 

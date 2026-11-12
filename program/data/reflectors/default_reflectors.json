@@ -1,8 +1,8 @@
 {
   "default_reflectors": [
-    "program\\data\\reflectors\\plant\\Leaf_1_reflectance_extrapolated_1100.tsv",
-    "program\\data\\reflectors\\plant\\Leaf_2_reflectance_extrapolated_1100.tsv",
-    "program\\data\\reflectors\\plant\\Leaf_3_reflectance_extrapolated_1100.tsv",
-    "program\\data\\reflectors\\plant\\Leaf_4_reflectance_extrapolated_1100.tsv"
+    "program/data/reflectors/plant/Leaf_1_reflectance_extrapolated_1100.tsv",
+    "program/data/reflectors/plant/Leaf_2_reflectance_extrapolated_1100.tsv",
+    "program/data/reflectors/plant/Leaf_3_reflectance_extrapolated_1100.tsv",
+    "program/data/reflectors/plant/Leaf_4_reflectance_extrapolated_1100.tsv"
   ]
 }

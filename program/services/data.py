@@ -1,9 +1,14 @@
 """
-Data loading services for FS FilterLab.
+Data loading and caching services for FS FilterLab.
+
+Public surface:
+- load_filter_collection / load_illuminant_collection / load_reflector_collection
+- load_sensor_profiles -> (profiles, default_key) for sensors + films (one cache)
+- initialize_application_data -> AppData (or None when no filters found)
 """
 # Standard library imports
-import pickle
-import time
+import json
+import logging
 from io import StringIO
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional, TypeVar, Callable
@@ -17,44 +22,37 @@ from models import (
     Filter, FilterCollection,
     ReflectorSpectrum, ReflectorCollection
 )
+from models.core import (
+    AppData, RGBSensorProfile, ColorSlideFilmProfile,
+    ColorNegativeFilmProfile, BWFilmProfile, SensorProfile
+)
 from models.constants import (
-    CACHE_DIR, DEFAULT_HEX_COLOR, INTERP_GRID,
-    DATA_FOLDERS, TSV_COLUMNS, METADATA_FIELDS, SPECTRAL_CONFIG
+    CACHE_DIR, DEFAULT_HEX_COLOR, INTERP_GRID, DATA_FOLDERS, TSV_COLUMNS,
+    METADATA_FIELDS, FILM_TSV_FIELDS, MIN_DATA_POINTS, PRECISION_DECIMALS,
+    SENSOR_TYPE_LABELS
 )
 
-
-def _interpolate_to_standard_grid(wavelengths: np.ndarray, values: np.ndarray) -> np.ndarray:
-    """
-    Interpolate spectral data to the standard wavelength grid.
-    
-    Args:
-        wavelengths: Input wavelength array
-        values: Corresponding spectral values (transmission, power, reflectance, etc.)
-        
-    Returns:
-        Interpolated values on the standard INTERP_GRID
-    """
-    return np.interp(INTERP_GRID, wavelengths, values, left=np.nan, right=np.nan)
+logger = logging.getLogger(__name__)
 
 # Generic type for cached data
 T = TypeVar('T')
 
+
+def _interpolate_to_standard_grid(wavelengths: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Interpolate spectral values onto the standard INTERP_GRID.
+
+    Wavelengths outside the measured range stay NaN ("unknown") — the
+    spectra helpers exclude or propagate them; nothing is fabricated.
+    """
+    return np.interp(INTERP_GRID, wavelengths, values, left=np.nan, right=np.nan)
+
+
 def _parse_comment_headers(file_path: str | Path) -> Tuple[Dict[str, str], List[str]]:
-    """
-    Parse comment headers from a TSV file and return metadata and data lines.
-    
-    Args:
-        file_path: Path to the TSV file with comment headers
-        
-    Returns:
-        Tuple of (metadata_dict, data_lines) where data_lines excludes comment headers
-    """
-    path = Path(file_path) if isinstance(file_path, str) else file_path
-    
+    """Metadata from '# key<TAB>value' header lines plus the non-comment data lines."""
     metadata = {}
     data_lines = []
-    
-    with open(path, 'r', encoding='utf-8') as f:
+
+    with open(Path(file_path), 'r', encoding='utf-8') as f:
         for line in f:
             line = line.rstrip('\n\r')
             
@@ -64,11 +62,8 @@ def _parse_comment_headers(file_path: str | Path) -> Tuple[Dict[str, str], List[
                 
             # Check if this is a comment line with metadata
             if line.startswith('# ') and '\t' in line:
-                # Extract key-value pair from comment
-                content = line[2:]  # Remove "# "
-                if '\t' in content:
-                    key, value = content.split('\t', 1)
-                    metadata[key.strip()] = value.strip()
+                key, value = line[2:].split('\t', 1)
+                metadata[key.strip()] = value.strip()
             elif line.startswith('#'):
                 # Skip section headers and other comment-only lines
                 continue
@@ -80,15 +75,7 @@ def _parse_comment_headers(file_path: str | Path) -> Tuple[Dict[str, str], List[
 
 
 def _parse_tsv_with_comments(file_path: str | Path) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """
-    Parse a TSV file with comment headers, returning both data and metadata.
-    
-    Args:
-        file_path: Path to the TSV file
-        
-    Returns:
-        Tuple of (dataframe, metadata_dict)
-    """
+    """TSV data (comment headers stripped) plus its comment-header metadata."""
     metadata, data_lines = _parse_comment_headers(file_path)
     
     if not data_lines:
@@ -103,77 +90,131 @@ def _parse_tsv_with_comments(file_path: str | Path) -> Tuple[pd.DataFrame, Dict[
 
 
 def _parse_tsv_file(file_path: str | Path) -> pd.DataFrame:
-    """
-    Parse a TSV file with standardized error handling.
-    
-    Args:
-        file_path: Path to the TSV file
-        
-    Returns:
-        DataFrame with parsed data, columns stripped of whitespace
-    """
-    path = Path(file_path) if isinstance(file_path, str) else file_path
-    df = pd.read_csv(path, sep="\t")
+    """Parse a tab-separated file into a DataFrame (column names stripped)."""
+    df = pd.read_csv(Path(file_path), sep="\t")
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
 
-def _cached_loader(cache_key: str, data_folder: str | Path, 
-                  load_function: Callable[[], T]) -> T:
+CACHE_FORMAT = "fs-filterlab-npz-1"  # bump to invalidate all cache files
+
+
+def _newest_source_mtime(data_folders: str | Path | List[str | Path]) -> float:
     """
-    Simple caching mechanism for data loading.
-    
-    Args:
-        cache_key: Base name for the cache file (without extension)
-        data_folder: Path to the folder containing source data files
-        load_function: Function to call when cache is invalid or missing
-        
-    Returns:
-        Data from cache or freshly loaded
+    Newest mtime among the given data folders' TSV files and this module.
+
+    Including this module means edits to the loading code silently
+    invalidate every cache on the next start.
     """
-    data_dir = Path(data_folder)
-    cache_dir = Path(CACHE_DIR)
-    cache_dir.mkdir(exist_ok=True)
-    cache_file = cache_dir / f"{cache_key}.pkl"
-    cache_time_file = cache_dir / f"{cache_key}_time.pkl"
-    
-    # Check if cache exists and is newer than source files
-    cache_valid = False
-    if cache_file.exists() and cache_time_file.exists():
-        try:
-            # Load the last modification time we saved
-            with open(cache_time_file, 'rb') as f:
-                cached_timestamp = pickle.load(f)
-            
-            # Find the newest file in the data folder
-            newest_time = 0
-            for filepath in data_dir.glob("**/*.tsv"):
-                if filepath.is_file():
-                    newest_time = max(newest_time, filepath.stat().st_mtime)
-            
-            # If our cached time is newer than any data file, cache is valid
-            cache_valid = cached_timestamp > newest_time
-            
-            if cache_valid:
-                with open(cache_file, 'rb') as f:
-                    return pickle.load(f)
-        except Exception:
-            pass  # Silent failure for cache operations
-    
-    # Cache miss or invalid - load fresh data
-    data = load_function()
-    
-    # Save to cache
+    if isinstance(data_folders, (str, Path)):
+        data_folders = [data_folders]
+    newest = Path(__file__).stat().st_mtime
+    for folder in data_folders:
+        for path in Path(folder).glob("**/*.tsv"):
+            if path.is_file():
+                newest = max(newest, path.stat().st_mtime)
+    return newest
+
+
+def _dataset_fingerprint(data_folders: str | Path | List[str | Path]) -> List[int]:
+    """
+    Content-level identity of a dataset: TSV file count plus total bytes.
+
+    mtimes are untrustworthy on machines that received the data through a
+    folder copy, a zip or a cloud sync: timestamps get reset or equalized,
+    and the mtime freshness check then keeps any old cache "fresh" forever.
+    This fingerprint travels inside the cache meta, so a cache built from a
+    60-file dataset cannot match a 1577-file dataset no matter what the
+    timestamps claim.  Content edits that preserve both file count and
+    total size stay undetected -- that is the mtime check's domain.
+    """
+    if isinstance(data_folders, (str, Path)):
+        data_folders = [data_folders]
+    count = 0
+    total_bytes = 0
+    for folder in data_folders:
+        for path in Path(folder).glob("**/*.tsv"):
+            if path.is_file():
+                count += 1
+                total_bytes += path.stat().st_size
+    return [count, total_bytes]
+
+
+def _read_cache(cache_file: Path, data_folders: str | Path | List[str | Path]
+                ) -> Optional[Tuple[Dict[str, np.ndarray], dict]]:
+    """
+    Load an npz cache file if present, newer than every source file, and
+    built from the same dataset shape.
+    """
+    if not cache_file.exists():
+        return None
     try:
-        with open(cache_file, 'wb') as f:
-            pickle.dump(data, f)
-            
-        # Save current timestamp
-        with open(cache_time_file, 'wb') as f:
-            pickle.dump(time.time(), f)
+        with np.load(cache_file, allow_pickle=False) as npz:
+            arrays = {name: npz[name] for name in npz.files}
+        meta = json.loads(arrays.pop("__meta__").item())
+        if meta.get("format") != CACHE_FORMAT:
+            return None
+        # The cache file's own kernel mtime is the write stamp: same clock as
+        # the source mtimes, so the comparison is skew-free (no time.time()).
+        # A tie counts as valid: the build read the sources within that tick.
+        if cache_file.stat().st_mtime < _newest_source_mtime(data_folders):
+            return None
+        # Timestamps reset under folder copies / zips / sync tools, and the
+        # mtime rule above then keeps any stale cache "fresh" forever -- the
+        # cross-machine "only ~60 Chroma filters" failure.  A cache must
+        # therefore also match the dataset's recorded file count + size.
+        # One-sided on purpose: an EMPTY source tree never invalidates a
+        # cache (deleted-sources rescue), any non-empty tree must match.
+        current = _dataset_fingerprint(data_folders)
+        if current[0] and meta.get("dataset") != current:
+            return None
+        return arrays, meta
+    except Exception:
+        return None  # Silent failure for cache operations
+
+
+def _write_cache(cache_file: Path, arrays: Dict[str, np.ndarray], meta: dict,
+                 fingerprint: List[int]) -> None:
+    """Write numeric arrays plus a JSON meta blob into a single npz file."""
+    meta = {"format": CACHE_FORMAT, **meta, "dataset": list(fingerprint)}
+    payload = {name: np.asarray(arr) for name, arr in arrays.items()}
+    payload["__meta__"] = np.array(json.dumps(meta))
+    with open(cache_file, "wb") as f:
+        np.savez(f, **payload)
+
+
+def _cached_loader(cache_key: str, data_folder: str | Path | List[str | Path],
+                   load_function: Callable[[], T],
+                   pack: Callable[[T], Tuple[Dict[str, np.ndarray], dict]],
+                   unpack: Callable[[Dict[str, np.ndarray], dict], T]) -> T:
+    """
+    npz-backed caching: one ``{key}.npz`` file per dataset in program/cache/.
+
+    Numeric arrays are stored as npz entries; strings and scalars travel in a
+    JSON blob inside the same file, so no pickle is involved. A cache stays
+    valid while it is newer than every source ``.tsv`` (and this module) and
+    its recorded dataset fingerprint still matches; anything else -- missing,
+    stale, corrupt, foreign-format, foreign-dataset -- silently triggers a
+    rebuild.
+    """
+    cache_dir = Path(CACHE_DIR)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"{cache_key}.npz"
+
+    hit = _read_cache(cache_file, data_folder)
+    if hit is not None:
+        try:
+            return unpack(*hit)
+        except Exception:
+            pass  # Undecodable payload -> rebuild silently
+
+    data = load_function()
+    try:
+        arrays, meta = pack(data)
+        _write_cache(cache_file, arrays, meta,
+                     _dataset_fingerprint(data_folder))
     except Exception:
         pass  # Silent failure for cache operations
-        
     return data
 
 
@@ -196,32 +237,16 @@ def create_empty_reflector_collection() -> ReflectorCollection:
     )
 
 def _safely_load_file(path: Path, processor_func: Callable) -> Optional[Any]:
-    """
-    Load and process a file with standardized error handling.
-    
-    Args:
-        path: Path to the file to load
-        processor_func: Function to process the file contents
-        
-    Returns:
-        Processed file contents or None if loading failed
-    """
+    """Process one file; on failure, log a warning and skip it."""
     try:
         return processor_func(path)
-    except Exception:
+    except Exception as e:
+        logger.warning("Skipping %s: %s", path, e)
         return None
 
 
 def _process_filter_file(path: Path) -> Optional[Tuple[dict, np.ndarray, np.ndarray, Filter]]:
-    """
-    Process a single filter file and return its data components.
-    
-    Args:
-        path: Path to the filter file
-        
-    Returns:
-        Tuple of (metadata, transmission, mask, filter) or None if invalid
-    """
+    """Filter TSV -> (metadata, transmission, mask, Filter), or None if invalid."""
     df = _parse_tsv_file(path)
     
     # Check if file has required columns
@@ -245,10 +270,9 @@ def _process_filter_file(path: Path) -> Optional[Tuple[dict, np.ndarray, np.ndar
     wavelengths = df[TSV_COLUMNS['wavelength']].astype(float).values
     transmittance = df[TSV_COLUMNS['transmittance']].astype(float).values
     
-    # Normalize if needed: Convert from percentage (0-100) to fractional (0-1) scale
-    # All internal calculations use 0-1 scale for mathematical correctness
-    if transmittance.max() > 1.5:
-        transmittance /= 100.0
+    # Convert from percentage (0-100) to fractional (0-1) scale
+    # All data files store values in 0-100 scale; internal calculations use 0-1
+    transmittance = transmittance / 100.0
     
     # Interpolate to standard grid
     interp_vals = _interpolate_to_standard_grid(wavelengths, transmittance)
@@ -283,7 +307,7 @@ def _load_filter_collection_from_files() -> FilterCollection:
     data_folder = Path(DATA_FOLDERS['filters'])
     data_folder.mkdir(exist_ok=True, parents=True)
     
-    files = list(data_folder.glob("**/*.tsv"))
+    files = sorted(data_folder.glob("**/*.tsv"))
     meta_list, matrix, masks = [], [], []
     filters = []
     
@@ -300,133 +324,262 @@ def _load_filter_collection_from_files() -> FilterCollection:
     if not matrix:
         return create_empty_filter_collection()
     
-    try:
-        df_result = pd.DataFrame(meta_list)
-        matrix_result = np.vstack(matrix)
-        masks_result = np.vstack(masks)
-        
-        return FilterCollection(
-            filters=filters,
-            df=df_result,
-            filter_matrix=matrix_result,
-            extrapolated_masks=masks_result
+    return FilterCollection(
+        filters=filters,
+        df=pd.DataFrame(meta_list),
+        filter_matrix=np.vstack(matrix),
+        extrapolated_masks=np.vstack(masks)
+    )
+
+
+def _pack_filter_collection(collection: FilterCollection) -> Tuple[Dict[str, np.ndarray], dict]:
+    """FilterCollection -> npz arrays (matrices) + JSON meta (df, filter fields)."""
+    arrays = {
+        "filter_matrix": collection.filter_matrix,
+        "extrapolated_masks": collection.extrapolated_masks,
+    }
+    meta = {
+        "df": {col: collection.df[col].tolist() for col in collection.df.columns},
+        "filters": [
+            {"name": f.name, "number": f.number,
+             "manufacturer": f.manufacturer, "hex_color": f.hex_color}
+            for f in collection.filters
+        ],
+    }
+    return arrays, meta
+
+
+def _unpack_filter_collection(arrays: Dict[str, np.ndarray], meta: dict) -> FilterCollection:
+    """Rebuild a FilterCollection; per-filter arrays are matrix rows."""
+    filters = [
+        Filter(
+            name=spec["name"], number=spec["number"],
+            manufacturer=spec["manufacturer"], hex_color=spec["hex_color"],
+            transmission=arrays["filter_matrix"][i].copy(),
+            extrapolated_mask=arrays["extrapolated_masks"][i].copy(),
         )
-    except Exception:
-        return create_empty_filter_collection()
+        for i, spec in enumerate(meta["filters"])
+    ]
+    return FilterCollection(
+        filters=filters,
+        df=pd.DataFrame(meta["df"]),
+        filter_matrix=arrays["filter_matrix"],
+        extrapolated_masks=arrays["extrapolated_masks"],
+    )
 
 
 def load_filter_collection() -> FilterCollection:
     """Load filter data and return a FilterCollection object."""
-    def _create_cached_data() -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, List[Filter]]:
-        """Load fresh filter data for caching"""
-        collection = _load_filter_collection_from_files()
-        return (collection.df, collection.filter_matrix, collection.extrapolated_masks, collection.filters)
-    
-    # Load data using cache wrapper
-    try:
-        cached_data = _cached_loader(
-            cache_key="filter_data",
-            data_folder=DATA_FOLDERS['filters'],
-            load_function=_create_cached_data
-        )
-        
-        # Unpack cached data
-        df, matrix, masks, filters = cached_data
-        
-        return FilterCollection(
-            filters=filters,
-            df=df,
-            filter_matrix=matrix,
-            extrapolated_masks=masks
-        )
-    except Exception:
-        return _load_filter_collection_from_files()
+    collection = _cached_loader(
+        cache_key="filter_data",
+        data_folder=DATA_FOLDERS['filters'],
+        load_function=_load_filter_collection_from_files,
+        pack=_pack_filter_collection,
+        unpack=_unpack_filter_collection,
+    )
+    # Startup visibility for the partial-dataset failure mode: a machine
+    # whose data folder (or cache) only holds one manufacturer must say so.
+    logger.info(
+        "Loaded %d filters from %d manufacturer(s)",
+        len(collection.filters),
+        len({f.manufacturer for f in collection.filters}),
+    )
+    return collection
 
 
-def _process_qe_file(path: Path) -> Optional[Tuple[str, Dict[str, np.ndarray], bool]]:
-    """
-    Process a quantum efficiency file.
-    
-    Args:
-        path: Path to the QE file
-        
-    Returns:
-        Tuple of (sensor_key, channel_data, is_default) or None if invalid
-    """
+def _process_qe_file(path: Path) -> Optional[Tuple[str, RGBSensorProfile, bool]]:
+    """QE TSV -> (display-name key, RGBSensorProfile, is_default), or None."""
     df = _parse_tsv_file(path)
-    
+
     # Check if file has required columns
     if 'Wavelength' not in df.columns or not any(col in df.columns for col in ['R', 'G', 'B']):
         return None
-    
-    # Extract sensor info
+
     brand = df['Manufacturer'].iloc[0].strip() if 'Manufacturer' in df.columns else "Generic"
     model = df['Name'].iloc[0].strip() if 'Name' in df.columns else path.stem
-    key = f"{brand} {model}"
-    
-    # Process channels
-    channel_data = {}
     wavelength = df['Wavelength'].astype(float).values
-    
-    for channel in ['R', 'G', 'B']:
-        if channel not in df.columns:
-            continue
-            
-        valid_mask = ~pd.isna(df[channel])
-        if not valid_mask.any():
-            continue
-            
-        channel_values = df[channel].values
-        interp = np.interp(
-            INTERP_GRID, 
-            wavelength, 
-            channel_values,
-            left=np.nan, 
-            right=np.nan
-        )
-        # Convert QE percentages to 0-1 scale for internal consistency
-        if np.nanmax(interp) > 1.5:
-            interp = interp / 100.0
-        channel_data[channel[0]] = interp
-    
-    # Check if this is the default QE file
+    # QE percentages (0-100) -> fractional (0-1) scale for internal calculations
+    channel_data = {
+        channel: _interpolate_to_standard_grid(wavelength, df[channel].values) / 100.0
+        for channel in ('R', 'G', 'B')
+        if channel in df.columns and (~pd.isna(df[channel])).any()
+    }
+
+    key = f"{brand} {model}"
     is_default = (path.name == 'Default_QE.tsv')
-    
-    return key, channel_data, is_default
+    return key, RGBSensorProfile(manufacturer=brand, name=model, channel_data=channel_data), is_default
 
 
-def _load_quantum_efficiencies_from_files() -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]], Optional[str]]:
+def _process_film_file(path: Path) -> Optional[Tuple[str, SensorProfile]]:
     """
-    Load quantum efficiency data from files without using cache.
-    
+    Process a film sensitivity TSV file and return the appropriate SensorProfile subclass.
+
+    File format (comment headers, then a tab-separated data table):
+        # Manufacturer: <value>
+        # Name:         <value>
+        # Type:         color_negative | color_slide | bw
+        # ISO:          <optional>
+        # Process:      <optional>
+        # Notes:        <optional>
+        Wavelength  R   G   B      (or single column V for B&W)
+
     Returns:
-        Tuple of (qe_keys, qe_data, default_key)
+        Tuple of (profile_key, SensorProfile subclass instance), or None if invalid.
     """
-    folder = Path(DATA_FOLDERS['qe'])
-    folder.mkdir(exist_ok=True, parents=True)
-    
-    files = list(folder.glob('*.tsv'))
-    qe_dict = {}
-    default_key = None
+    df, metadata = _parse_tsv_with_comments(path)
 
-    for path in files:
+    if 'Wavelength' not in df.columns:
+        return None
+
+    # --- Required metadata ---
+    manufacturer = metadata.get(FILM_TSV_FIELDS['manufacturer'], '').strip()
+    name = metadata.get(FILM_TSV_FIELDS['name'], '').strip()
+    film_type = metadata.get(FILM_TSV_FIELDS['type'], '').strip().lower()
+
+    if not manufacturer or not name or not film_type:
+        return None
+
+    valid_types = set(SENSOR_TYPE_LABELS)
+    if film_type not in valid_types:
+        return None
+
+    # --- Optional metadata ---
+    iso = metadata.get(FILM_TSV_FIELDS['iso'], '').strip() or None
+    process = metadata.get(FILM_TSV_FIELDS['process'], '').strip() or None
+    notes = metadata.get(FILM_TSV_FIELDS['notes'], '').strip() or None
+
+    wavelength = df['Wavelength'].astype(float).values
+
+    def _interp_channel(col: str) -> Optional[np.ndarray]:
+        if col not in df.columns or not (~pd.isna(df[col])).any():
+            return None
+        vals = _interpolate_to_standard_grid(wavelength, df[col].values)
+        # Normalise to 0-1 if stored as 0-100 (nanmax: blank cells stay NaN)
+        if np.nanmax(vals) > 1.5:
+            vals = vals / 100.0
+        return vals
+
+    key = f"{manufacturer} {name}"
+    common = dict(manufacturer=manufacturer, name=name, iso=iso, process=process, notes=notes)
+
+    if film_type == 'bw':
+        sensitivity = _interp_channel('V')
+        if sensitivity is None:
+            # Fall back to first non-Wavelength column
+            data_cols = [c for c in df.columns if c != 'Wavelength']
+            if not data_cols:
+                return None
+            sensitivity = _interp_channel(data_cols[0])
+        if sensitivity is None:
+            return None
+        profile = BWFilmProfile(**common, sensitivity=sensitivity)
+
+    else:
+        channel_data = {}
+        for ch in ['R', 'G', 'B']:
+            arr = _interp_channel(ch)
+            if arr is not None:
+                channel_data[ch] = arr
+        if not channel_data:
+            return None
+
+        if film_type == 'color_slide':
+            profile = ColorSlideFilmProfile(**common, channel_data=channel_data)
+        elif film_type == 'color_negative':
+            profile = ColorNegativeFilmProfile(**common, channel_data=channel_data)
+        else:  # rgb_sensor handled via film folder (unusual but valid)
+            profile = RGBSensorProfile(**common, channel_data=channel_data)
+
+    return key, profile
+
+
+def _load_sensor_profiles_from_files() -> Tuple[Dict[str, SensorProfile], Optional[str]]:
+    """Load digital-sensor QE and film TSVs into one profile dict + default key."""
+    profiles: Dict[str, SensorProfile] = {}
+    default_key: Optional[str] = None
+
+    # Digital sensors: QE curves from the QE_data folder
+    qe_folder = Path(DATA_FOLDERS['qe'])
+    qe_folder.mkdir(exist_ok=True, parents=True)
+    for path in sorted(qe_folder.glob('*.tsv')):
         result = _safely_load_file(path, _process_qe_file)
         if result:
-            key, channel_data, is_default = result
-            qe_dict[key] = channel_data
+            key, profile, is_default = result
+            profiles[key] = profile
             if is_default and default_key is None:
                 default_key = key
 
-    return (sorted(qe_dict.keys()), qe_dict, default_key)
+    # Film stocks: dye-layer curves from the film_data folder; a film sharing
+    # a display name with a sensor overrides it (unlikely but safe)
+    film_folder = Path(DATA_FOLDERS['film'])
+    film_folder.mkdir(exist_ok=True, parents=True)
+    for path in sorted(film_folder.glob('*.tsv')):
+        result = _safely_load_file(path, _process_film_file)
+        if result:
+            key, profile = result
+            profiles[key] = profile
+
+    return profiles, default_key
 
 
-def load_quantum_efficiencies() -> Tuple[List[str], Dict[str, Dict[str, np.ndarray]], Optional[str]]:
-    """Load quantum efficiency data for camera sensors."""
+def load_sensor_profiles() -> Tuple[Dict[str, SensorProfile], Optional[str]]:
+    """Load all sensor + film profiles, with caching."""
     return _cached_loader(
-        cache_key="qe_data",
-        data_folder=DATA_FOLDERS['qe'],
-        load_function=_load_quantum_efficiencies_from_files
+        cache_key="sensor_profiles",
+        data_folder=[DATA_FOLDERS['qe'], DATA_FOLDERS['film']],
+        load_function=_load_sensor_profiles_from_files,
+        pack=_pack_profiles,
+        unpack=_unpack_profiles,
     )
+
+
+# sensor_type tag -> profile class, for profile cache round-trips
+_PROFILE_CLASSES = {
+    'rgb_sensor': RGBSensorProfile,
+    'color_slide': ColorSlideFilmProfile,
+    'color_negative': ColorNegativeFilmProfile,
+    'bw': BWFilmProfile,
+}
+
+
+def _pack_profiles(payload: Tuple[Dict[str, SensorProfile], Optional[str]]
+                   ) -> Tuple[Dict[str, np.ndarray], dict]:
+    """(profiles, default_key) -> npz arrays (curves) + JSON meta (fields)."""
+    profiles, default_key = payload
+    arrays: Dict[str, np.ndarray] = {}
+    entries = []
+    for i, (key, profile) in enumerate(profiles.items()):
+        channels = []
+        if profile.sensor_type == 'bw':
+            arrays[f"profile_{i}_V"] = profile.sensitivity
+        else:
+            for ch, arr in profile.channel_data.items():
+                arrays[f"profile_{i}_{ch}"] = arr
+                channels.append(ch)
+        entries.append({
+            "key": key, "type": profile.sensor_type,
+            "manufacturer": profile.manufacturer, "name": profile.name,
+            "iso": profile.iso, "process": profile.process, "notes": profile.notes,
+            "channels": channels,
+        })
+    return arrays, {"profiles": entries, "default_key": default_key}
+
+
+def _unpack_profiles(arrays: Dict[str, np.ndarray], meta: dict
+                     ) -> Tuple[Dict[str, SensorProfile], Optional[str]]:
+    profiles: Dict[str, SensorProfile] = {}
+    for i, entry in enumerate(meta["profiles"]):
+        cls = _PROFILE_CLASSES[entry["type"]]
+        common = dict(
+            manufacturer=entry["manufacturer"], name=entry["name"],
+            iso=entry["iso"], process=entry["process"], notes=entry["notes"],
+        )
+        if entry["type"] == 'bw':
+            profiles[entry["key"]] = cls(**common, sensitivity=arrays[f"profile_{i}_V"].copy())
+        else:
+            channel_data = {ch: arrays[f"profile_{i}_{ch}"].copy() for ch in entry["channels"]}
+            profiles[entry["key"]] = cls(**common, channel_data=channel_data)
+    return profiles, meta["default_key"]
 
 
 def _process_illuminant_file(path: Path) -> Optional[Tuple[str, np.ndarray, Optional[str]]]:
@@ -472,7 +625,7 @@ def _load_illuminant_collection_from_files() -> Tuple[Dict[str, np.ndarray], Dic
 
     illum, meta = {}, {}
     
-    for path in folder.glob('*.tsv'):
+    for path in sorted(folder.glob('*.tsv')):
         result = _safely_load_file(path, _process_illuminant_file)
         if result:
             name, interp, description = result
@@ -483,12 +636,28 @@ def _load_illuminant_collection_from_files() -> Tuple[Dict[str, np.ndarray], Dic
     return (illum, meta)
 
 
+def _pack_illuminants(payload: Tuple[Dict[str, np.ndarray], Dict[str, str]]
+                      ) -> Tuple[Dict[str, np.ndarray], dict]:
+    """Illuminant tuple -> npz arrays (spectra) + JSON meta (names, descriptions)."""
+    illum, descriptions = payload
+    arrays = {f"illum_{i}": arr for i, arr in enumerate(illum.values())}
+    return arrays, {"names": list(illum), "descriptions": descriptions}
+
+
+def _unpack_illuminants(arrays: Dict[str, np.ndarray], meta: dict
+                        ) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
+    illum = {name: arrays[f"illum_{i}"].copy() for i, name in enumerate(meta["names"])}
+    return illum, meta["descriptions"]
+
+
 def load_illuminant_collection() -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
     """Load illuminant collection."""
     return _cached_loader(
         cache_key="illuminants",
         data_folder=DATA_FOLDERS['illuminants'],
-        load_function=_load_illuminant_collection_from_files
+        load_function=_load_illuminant_collection_from_files,
+        pack=_pack_illuminants,
+        unpack=_unpack_illuminants,
     )
 
 
@@ -502,11 +671,8 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray, Dict[
     Returns:
         Tuple of (name, interpolated_data, metadata_dict) or None if invalid
     """
-    try:
-        df, metadata = _parse_tsv_with_comments(path)
-    except Exception:
-        return None
-    
+    df, metadata = _parse_tsv_with_comments(path)
+
     # Check for required columns
     if TSV_COLUMNS['wavelength'] not in df.columns or TSV_COLUMNS['reflectance'] not in df.columns:
         return None
@@ -515,27 +681,14 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray, Dict[
     metadata['source_file'] = str(path)
     metadata['source_folder'] = path.parent.name
     
-    # Extract name from metadata, prioritizing name_for_search field
+    # Extract name from metadata, falling back to the filename
     name = None
-    
-    # First priority: use the user-selected name_for_search field (now contains column name, not value)
-    if METADATA_FIELDS['name_for_search'] in metadata and metadata[METADATA_FIELDS['name_for_search']].strip():
-        column_name = metadata[METADATA_FIELDS['name_for_search']].strip()
-        # Look up the actual value using the column name
-        if column_name in metadata and metadata[column_name].strip():
-            name = metadata[column_name].strip()
-    
-    if not name:
-        # Fallback: try common name fields from metadata
-        name_fields = [METADATA_FIELDS['species'], METADATA_FIELDS['name'], 
-                      METADATA_FIELDS['sample_type'], METADATA_FIELDS['collector'], 
-                      METADATA_FIELDS['package_title']]
-        for field in name_fields:
-            if field in metadata and metadata[field].strip():
-                name = metadata[field].strip()
-                break
-    
-    # Final fallback to filename if no name found in metadata
+    for field in (METADATA_FIELDS['name'], METADATA_FIELDS['sample_type'],
+                  METADATA_FIELDS['collector']):
+        value = metadata.get(field, '')
+        if value.strip():
+            name = value.strip()
+            break
     if not name:
         name = path.stem
     
@@ -545,7 +698,7 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray, Dict[
     
     # Check for sufficient valid data points
     valid_mask = ~np.isnan(refl)
-    if np.sum(valid_mask) < SPECTRAL_CONFIG['min_data_points']:
+    if np.sum(valid_mask) < MIN_DATA_POINTS:
         return None
         
     wl = wl[valid_mask]
@@ -554,13 +707,12 @@ def _process_reflector_file(path: Path) -> Optional[Tuple[str, np.ndarray, Dict[
     # Interpolate to standard grid
     interp_vals = _interpolate_to_standard_grid(wl, refl)
     
-    # Convert from percentage (0-100) to fractional (0-1) scale for internal consistency
-    # All spectral data uses 0-1 scale internally
-    if np.nanmax(interp_vals) > SPECTRAL_CONFIG['normalization_threshold']:
-        interp_vals = interp_vals / 100.0
+    # Convert from percentage (0-100) to fractional (0-1) scale
+    # All data files store values in 0-100 scale; internal calculations use 0-1
+    interp_vals = interp_vals / 100.0
     
     # Round to specified decimal places to avoid floating point precision issues
-    interp_vals = np.round(interp_vals, SPECTRAL_CONFIG['precision_decimals'])
+    interp_vals = np.round(interp_vals, PRECISION_DECIMALS)
     
     return name, interp_vals, metadata
 
@@ -575,7 +727,7 @@ def _load_reflector_collection_from_files() -> ReflectorCollection:
     folder = Path(DATA_FOLDERS['reflectors'])
     folder.mkdir(exist_ok=True, parents=True)
 
-    files = list(folder.glob("**/*.tsv"))
+    files = sorted(folder.glob("**/*.tsv"))
     reflectors = []
     matrix = []
     meta_list = []
@@ -611,10 +763,67 @@ def _load_reflector_collection_from_files() -> ReflectorCollection:
     return ReflectorCollection(reflectors=reflectors, df=df_result, reflector_matrix=reflector_matrix)
 
 
+def _pack_reflector_collection(collection: ReflectorCollection) -> Tuple[Dict[str, np.ndarray], dict]:
+    """ReflectorCollection -> npz arrays (matrix) + JSON meta (df, spectrum fields)."""
+    arrays = {"reflector_matrix": collection.reflector_matrix}
+    meta = {
+        "df": {col: collection.df[col].tolist() for col in collection.df.columns},
+        "reflectors": [
+            {"name": r.name, "metadata": r.metadata} for r in collection.reflectors
+        ],
+    }
+    return arrays, meta
+
+
+def _unpack_reflector_collection(arrays: Dict[str, np.ndarray], meta: dict) -> ReflectorCollection:
+    """Rebuild a ReflectorCollection; spectrum values are matrix rows."""
+    reflectors = [
+        ReflectorSpectrum(
+            name=spec["name"],
+            values=arrays["reflector_matrix"][i].copy(),
+            metadata=spec["metadata"],
+        )
+        for i, spec in enumerate(meta["reflectors"])
+    ]
+    return ReflectorCollection(
+        reflectors=reflectors,
+        df=pd.DataFrame(meta["df"]),
+        reflector_matrix=arrays["reflector_matrix"],
+    )
+
+
 def load_reflector_collection() -> ReflectorCollection:
     """Load reflector collection."""
     return _cached_loader(
         cache_key="reflectors",
         data_folder=DATA_FOLDERS['reflectors'],
-        load_function=_load_reflector_collection_from_files
+        load_function=_load_reflector_collection_from_files,
+        pack=_pack_reflector_collection,
+        unpack=_unpack_reflector_collection,
+    )
+
+
+def initialize_application_data() -> Optional[AppData]:
+    """Load every dataset and assemble the AppData container.
+
+    Returns None when the filters folder holds no valid .tsv files --
+    without filters the application has nothing to show (app.py renders
+    an error page in that case).
+    """
+    filter_collection = load_filter_collection()
+    if not filter_collection.filters:
+        logger.error(f"No filter data found. Please add .tsv files to {DATA_FOLDERS['filters']}")
+        return None
+
+    sensor_profiles, default_key = load_sensor_profiles()
+    illuminants, illuminant_metadata = load_illuminant_collection()
+    reflector_collection = load_reflector_collection()
+
+    return AppData(
+        filter_collection=filter_collection,
+        default_key=default_key,
+        illuminants=illuminants,
+        illuminant_metadata=illuminant_metadata,
+        reflector_collection=reflector_collection,
+        sensor_profiles=sensor_profiles,
     )

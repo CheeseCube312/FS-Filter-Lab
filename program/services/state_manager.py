@@ -1,331 +1,154 @@
 """
-State Management for FS FilterLab.
+Application state for FS FilterLab.
 
-Dict-backed reactive state with change callbacks. UI binds to state values,
-and updates trigger targeted re-renders via registered listeners.
+Plain dataclass containers (S3): no backing dict, no change listeners, no
+generic get()/set(). One field per concept — the old
+active_profile/current_qe/selected_camera triple is collapsed into
+``active_profile`` plus the two derived properties below. UI refresh is owned
+by views via the ``on_change`` callback they pass around, not by state.
 """
+from __future__ import annotations
+
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from models.constants import DEFAULT_WB_GAINS, MY_FILTERS_FILE
-from models.core import ChannelMixerSettings, Filter
+from models.constants import (
+    DEFAULT_CRITERION,
+    DEFAULT_WB_GAINS,
+    MY_FILTERS_FILE,
+    REPO_ROOT,
+)
+from models.core import ChannelMixerSettings, SensorProfile
+
+from services.spectra import wb_gains as compute_wb_gains
 
 logger = logging.getLogger(__name__)
 
+# Anchored like the models/constants paths: immune to the launch directory.
+DEFAULT_REFLECTORS_FILE = str(
+    REPO_ROOT / "program/data/reflectors/default_reflectors.json"
+)
 
-class StateManager:
+
+def _normalize_reflector_entry(entry: str) -> str:
+    """Canonical repo-relative POSIX path for a stored reflector source.
+
+    The default-reflector JSON historically mixed absolute and repo-relative
+    entries (saves recorded whatever form the loader used); matching and
+    saving must not depend on the form a path was written in.
     """
-    Application state manager.
+    path = Path(entry)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    try:
+        path = path.resolve()
+    except OSError:  # unresolvable: keep the entry as written
+        return str(entry)
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:  # outside the repo: keep the absolute POSIX form
+        return path.as_posix()
 
-    Uses a plain dict as backing store with explicit property accessors.
-    Change listeners can be registered to trigger UI updates when specific
-    state keys change.
+
+def _load_json_list(path: str, key: str) -> List[str]:
+    """Read a JSON object from ``path`` and return its ``key`` list (or [])."""
+    fp = Path(path)
+    if fp.exists():
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+            return data.get(key, [])
+        except (json.JSONDecodeError, IOError) as exc:
+            logger.warning("Could not read %s: %s", fp, exc)
+            return []
+    return []
+
+
+def _save_json_list(path: str, key: str, items: List[str]) -> None:
+    """Write ``{key: items}`` as JSON to ``path``, creating parent folders."""
+    fp = Path(path)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fp.write_text(json.dumps({key: items}, indent=2), encoding="utf-8")
+    except IOError as exc:
+        logger.warning("Could not save %s: %s", fp, exc)
+
+
+def _default_wavelength_criteria() -> List[Dict[str, int]]:
+    """Fresh default wavelength-criteria row (mutable default, so a factory)."""
+    return [dict(DEFAULT_CRITERION)]
+
+
+@dataclass
+class AppState:
+    """
+    All mutable application state as plain typed fields.
+
+    Writers assign fresh collections; computed values are derived properties
+    or live in services/ (spectra, calculations). Persistence helpers (My
+    Filters, default reflectors) read/write small JSON files and are loaded
+    once at construction.
     """
 
-    _DEFAULT_REFLECTORS_FILE = "program/data/reflectors/default_reflectors.json"
+    # --- Filter data ---
+    selected_filters: List[str] = field(default_factory=list)
+    filter_multipliers: Dict[str, int] = field(default_factory=dict)
+    # --- Sensor / film (single source of truth) ---
+    active_profile: Optional[SensorProfile] = None
+    illuminant: Optional[np.ndarray] = None
+    illuminant_name: Optional[str] = None
+    # --- Computed results ---
+    white_balance_gains: Dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_WB_GAINS)
+    )
+    wb_reference_surface: Optional[str] = None
+    # --- Surfaces instrument: reflectors added as color-preview chips ---
+    selected_surfaces: List[str] = field(default_factory=list)
+    # --- Data shelf: last import outcome per importer card ---
+    last_import: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    # --- Display toggles ---
+    apply_white_balance: bool = False
+    my_filters_only: bool = False
+    # --- Scene preview: "camera look" render mode (filmic tone + chroma) ---
+    scene_look: bool = True
+    # --- Advanced filter search (persists across UI rebuilds) ---
+    advanced_search_manufacturers: List[str] = field(default_factory=list)
+    advanced_search_wavelength_criteria: List[Dict[str, int]] = field(
+        default_factory=_default_wavelength_criteria
+    )
+    advanced_search_sort: str = "Filter Number"
+    # --- Channel mixer ---
+    channel_mixer: ChannelMixerSettings = field(default_factory=ChannelMixerSettings)
+    # --- Sidebar expansion open/closed state (persists across rebuilds) ---
+    sidebar_expansions: Dict[str, bool] = field(default_factory=dict)
+    # --- Private: persisted lists/sets, loaded once at construction ---
+    _default_reflector_files: List[str] = field(default_factory=list)
+    _my_filters_set: set = field(default_factory=set)
 
-    def __init__(self) -> None:
-        self._store: Dict[str, Any] = {}
-        self._listeners: Dict[str, List[Callable]] = {}
-        self._init_defaults()
-
-    # ====================================================================
-    # INITIALISATION
-    # ====================================================================
-
-    def _init_defaults(self) -> None:
-        """Populate the backing store with sensible defaults."""
-        defaults: Dict[str, Any] = {
-            # Filter data
-            "selected_filters": [],
-            "filter_multipliers": {},
-            # QE and illuminant
-            "current_qe": None,
-            "selected_camera": None,
-            "illuminant": None,
-            "illuminant_name": None,
-            # Target profile
-            "target_profile": None,
-            "selected_target_name": None,
-            # Computed results
-            "combined_transmission": None,
-            "white_balance_gains": DEFAULT_WB_GAINS.copy(),
-            "wb_reference_surface": None,
-            # Export
-            "last_export": {},
-            # Display toggles
-            "log_view": False,
-            "apply_white_balance": False,
-            "show_advanced_search": False,
-            "show_import_data": False,
-            "show_reflector_search": False,
-            "show_my_filters_manager": False,
-            # My Filters toggle (search only owned)
-            "my_filters_only": False,
-            # Advanced filter search state (persists across UI rebuilds)
-            "advanced_search_manufacturers": [],
-            "advanced_search_wavelength_criteria": [{"wavelength": 550, "trans_min": 0, "trans_max": 100}],
-            "advanced_search_sort": "Filter Number",
-            # RGB channel visibility
-            "show_R": True,
-            "show_G": True,
-            "show_B": True,
-            # Channel mixer settings (identity matrix, disabled)
-            "channel_mixer": ChannelMixerSettings(),
-            # Import state
-            "import_status": None,
-            "import_error_message": None,
-            # Sidebar expansion open/closed state (persists across rebuilds)
-            "sidebar_expansions": {},
-        }
-        for key, value in defaults.items():
-            if key not in self._store:
-                self._store[key] = value
+    def __post_init__(self) -> None:
+        self._default_reflector_files = self._load_default_reflectors_from_file()
+        self._my_filters_set = set(self._load_my_filters_from_file())
 
     # ====================================================================
-    # CHANGE LISTENER MECHANISM
+    # DERIVED STATE (the collapsed sensor triple-key)
     # ====================================================================
-
-    def on_change(self, key: str, callback: Callable) -> None:
-        """Register *callback* to fire when *key* changes."""
-        self._listeners.setdefault(key, []).append(callback)
-
-    def _notify(self, key: str) -> None:
-        for cb in self._listeners.get(key, []):
-            try:
-                cb()
-            except Exception:
-                logger.exception("Listener error for key %s", key)
-
-    def _set(self, key: str, value: Any) -> None:
-        old = self._store.get(key)
-        self._store[key] = value
-        # Avoid spurious notifications for identical primitive values
-        if old is not value:
-            self._notify(key)
-
-    # ====================================================================
-    # WIDGET-CONTROLLED PROPERTIES
-    # ====================================================================
-
-    @property
-    def selected_filters(self) -> List[str]:
-        return self._store.get("selected_filters", [])
-
-    @selected_filters.setter
-    def selected_filters(self, value: List[str]) -> None:
-        self._set("selected_filters", list(value))
-
-    @property
-    def show_advanced_search(self) -> bool:
-        return self._store.get("show_advanced_search", False)
-
-    @show_advanced_search.setter
-    def show_advanced_search(self, value: bool) -> None:
-        self._set("show_advanced_search", value)
-
-    # Advanced filter search state properties
-    @property
-    def advanced_search_manufacturers(self) -> List[str]:
-        return self._store.get("advanced_search_manufacturers", [])
-
-    @advanced_search_manufacturers.setter
-    def advanced_search_manufacturers(self, value: List[str]) -> None:
-        self._set("advanced_search_manufacturers", value)
-
-    @property
-    def advanced_search_wavelength_criteria(self) -> List[Dict]:
-        """List of wavelength criteria, each with {wavelength, trans_min, trans_max}."""
-        return self._store.get("advanced_search_wavelength_criteria", [{"wavelength": 550, "trans_min": 0, "trans_max": 100}])
-
-    @advanced_search_wavelength_criteria.setter
-    def advanced_search_wavelength_criteria(self, value: List[Dict]) -> None:
-        self._set("advanced_search_wavelength_criteria", value)
-
-    @property
-    def advanced_search_sort(self) -> str:
-        return self._store.get("advanced_search_sort", "Filter Number")
-
-    @advanced_search_sort.setter
-    def advanced_search_sort(self, value: str) -> None:
-        self._set("advanced_search_sort", value)
-
-    @property
-    def show_import_data(self) -> bool:
-        return self._store.get("show_import_data", False)
-
-    @show_import_data.setter
-    def show_import_data(self, value: bool) -> None:
-        self._set("show_import_data", value)
-
-    @property
-    def show_channel_mixer(self) -> bool:
-        return self.channel_mixer.enabled
-
-    @show_channel_mixer.setter
-    def show_channel_mixer(self, value: bool) -> None:
-        mixer = self.channel_mixer
-        if mixer.enabled != value:
-            mixer.enabled = value
-            self.channel_mixer = mixer
-
-    @property
-    def show_reflector_search(self) -> bool:
-        return self._store.get("show_reflector_search", False)
-
-    @show_reflector_search.setter
-    def show_reflector_search(self, value: bool) -> None:
-        self._set("show_reflector_search", value)
-
-    @property
-    def sidebar_expansions(self) -> Dict[str, bool]:
-        """Open/closed state for each named sidebar expander."""
-        return self._store.get("sidebar_expansions", {})
-
-    @sidebar_expansions.setter
-    def sidebar_expansions(self, value: Dict[str, bool]) -> None:
-        self._store["sidebar_expansions"] = value  # direct write — no listener needed
-
-    # ====================================================================
-    # COMPUTED / DISPLAY PROPERTIES
-    # ====================================================================
-
-    @property
-    def log_view(self) -> bool:
-        return self._store.get("log_view", False)
-
-    @log_view.setter
-    def log_view(self, value: bool) -> None:
-        self._set("log_view", value)
-
-    @property
-    def apply_white_balance(self) -> bool:
-        return self._store.get("apply_white_balance", False)
-
-    @apply_white_balance.setter
-    def apply_white_balance(self, value: bool) -> None:
-        self._set("apply_white_balance", value)
-
-    @property
-    def rgb_channels_visibility(self) -> Dict[str, bool]:
-        return {
-            "R": self._store.get("show_R", True),
-            "G": self._store.get("show_G", True),
-            "B": self._store.get("show_B", True),
-        }
-
-    @rgb_channels_visibility.setter
-    def rgb_channels_visibility(self, value: Dict[str, bool]) -> None:
-        for ch in ("R", "G", "B"):
-            self._set(f"show_{ch}", value.get(ch, True))
-
-    @property
-    def channel_mixer(self) -> ChannelMixerSettings:
-        return self._store.get("channel_mixer", ChannelMixerSettings())
-
-    @channel_mixer.setter
-    def channel_mixer(self, value: ChannelMixerSettings) -> None:
-        self._set("channel_mixer", value)
-
-    # ====================================================================
-    # READ-WRITE STATE PROPERTIES
-    # ====================================================================
-
-    @property
-    def filter_multipliers(self) -> Dict[str, int]:
-        return self._store.get("filter_multipliers", {})
-
-    @filter_multipliers.setter
-    def filter_multipliers(self, value: Dict[str, int]) -> None:
-        self._set("filter_multipliers", dict(value))
 
     @property
     def current_qe(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._store.get("current_qe")
-
-    @current_qe.setter
-    def current_qe(self, value: Optional[Dict[str, np.ndarray]]) -> None:
-        self._set("current_qe", value)
+        """Channel data of the active profile; None when no profile is set."""
+        return self.active_profile.get_channels() if self.active_profile else None
 
     @property
     def selected_camera(self) -> Optional[str]:
-        return self._store.get("selected_camera")
-
-    @selected_camera.setter
-    def selected_camera(self, value: Optional[str]) -> None:
-        self._set("selected_camera", value)
-
-    @property
-    def illuminant(self) -> Optional[np.ndarray]:
-        return self._store.get("illuminant")
-
-    @illuminant.setter
-    def illuminant(self, value: Optional[np.ndarray]) -> None:
-        self._set("illuminant", value)
-
-    @property
-    def illuminant_name(self) -> Optional[str]:
-        return self._store.get("illuminant_name")
-
-    @illuminant_name.setter
-    def illuminant_name(self, value: Optional[str]) -> None:
-        self._set("illuminant_name", value)
-
-    @property
-    def target_profile(self) -> Optional[Filter]:
-        return self._store.get("target_profile")
-
-    @target_profile.setter
-    def target_profile(self, value: Optional[Filter]) -> None:
-        self._set("target_profile", value)
-
-    @property
-    def selected_target_name(self) -> Optional[str]:
-        return self._store.get("selected_target_name")
-
-    @selected_target_name.setter
-    def selected_target_name(self, value: Optional[str]) -> None:
-        self._set("selected_target_name", value)
-
-    @property
-    def combined_transmission(self) -> Optional[np.ndarray]:
-        return self._store.get("combined_transmission")
-
-    @combined_transmission.setter
-    def combined_transmission(self, value: Optional[np.ndarray]) -> None:
-        self._set("combined_transmission", value)
-
-    @property
-    def white_balance_gains(self) -> Dict[str, float]:
-        g = self._store.get("white_balance_gains")
-        return g.copy() if isinstance(g, dict) else DEFAULT_WB_GAINS.copy()
-
-    @white_balance_gains.setter
-    def white_balance_gains(self, value: Dict[str, float]) -> None:
-        self._set("white_balance_gains", dict(value))
-
-    @property
-    def wb_reference_surface(self) -> Optional[str]:
-        return self._store.get("wb_reference_surface")
-
-    @wb_reference_surface.setter
-    def wb_reference_surface(self, value: Optional[str]) -> None:
-        self._set("wb_reference_surface", value)
-
-    @property
-    def last_export(self) -> Dict:
-        return self._store.get("last_export", {})
-
-    @last_export.setter
-    def last_export(self, value: Dict) -> None:
-        self._set("last_export", value)
+        """Display name of the active profile (sensor or film)."""
+        return self.active_profile.display_name if self.active_profile else None
 
     # ====================================================================
-    # WHITE BALANCE METHODS
+    # WHITE BALANCE
     # ====================================================================
 
     def set_white_balance_from_surface(
@@ -334,11 +157,10 @@ class StateManager:
         transmission: np.ndarray,
         source_file: Optional[str] = None,
     ) -> None:
-        from services.calculations import compute_white_balance_gains_from_surface
-
         if self.current_qe and self.illuminant is not None:
-            new_gains = compute_white_balance_gains_from_surface(
-                reflector, transmission, self.current_qe, self.illuminant
+            new_gains = compute_wb_gains(
+                transmission, self.current_qe, self.illuminant,
+                reflector=reflector,
             )
             self.white_balance_gains = new_gains
             self.wb_reference_surface = source_file
@@ -358,42 +180,37 @@ class StateManager:
         Otherwise computes standard WB from the filter transmission, QE, and
         illuminant.  Returns the (possibly updated) gains dict.
         """
-        from services.calculations import (
-            compute_white_balance_gains,
-            compute_white_balance_gains_from_surface,
-        )
-
         wb_gains = self.white_balance_gains
         if not self.current_qe or self.illuminant is None:
             return wb_gains
 
         wb_ref = self.wb_reference_surface
-        if wb_ref and reflector_collection:
+        if wb_ref:
             ref_reflector = None
-            for r in reflector_collection.reflectors:
-                if r.metadata.get("source_file", "") == wb_ref:
-                    ref_reflector = r
-                    break
+            if reflector_collection is not None:
+                for r in reflector_collection.reflectors:
+                    if r.metadata.get("source_file", "") == wb_ref:
+                        ref_reflector = r
+                        break
 
             if ref_reflector is not None:
-                wb_gains = compute_white_balance_gains_from_surface(
-                    ref_reflector.values, trans_interp,
-                    self.current_qe, self.illuminant,
-                )
-                self.white_balance_gains = wb_gains
-            else:
-                logger.warning("WB reference surface not found: %s", wb_ref)
-                wb_gains = compute_white_balance_gains(
+                wb_gains = compute_wb_gains(
                     trans_interp, self.current_qe, self.illuminant,
+                    reflector=ref_reflector.values,
                 )
                 self.white_balance_gains = wb_gains
-                self.wb_reference_surface = None
-        else:
-            wb_gains = compute_white_balance_gains(
-                trans_interp, self.current_qe, self.illuminant,
-            )
-            self.white_balance_gains = wb_gains
+                return wb_gains
 
+            # Surface gone or no collection loaded: fall back to standard
+            # gains AND drop the dangling reference, so the UI chip and
+            # the stored gains can never disagree.
+            logger.warning("WB reference surface not found: %s", wb_ref)
+            self.wb_reference_surface = None
+
+        wb_gains = compute_wb_gains(
+            trans_interp, self.current_qe, self.illuminant,
+        )
+        self.white_balance_gains = wb_gains
         return wb_gains
 
     # ====================================================================
@@ -405,74 +222,45 @@ class StateManager:
         self.illuminant_name = name
         self.illuminant = illuminants.get(name)
 
-    def select_camera(self, name: Optional[str], qe_data: Dict[str, Any]) -> None:
-        """Set the active camera/QE profile by name."""
+    def select_sensor(self, name: Optional[str], sensor_profiles: Dict[str, Any]) -> None:
+        """Set the active sensor or film profile by display name."""
         if name and name != "None":
-            self.selected_camera = name
-            self.current_qe = qe_data.get(name)
+            self.active_profile = sensor_profiles.get(name)
         else:
-            self.selected_camera = None
-            self.current_qe = None
-
-    def select_target(self, name: Optional[str], filter_collection: Any) -> None:
-        """Set the target profile from a named filter."""
-        if not name or name == "None":
-            self.target_profile = None
-            self.selected_target_name = None
-        else:
-            display_to_index = filter_collection.get_display_to_index_map()
-            idx = display_to_index[name]
-            self.target_profile = filter_collection.filters[idx]
-            self.selected_target_name = name
+            self.active_profile = None
 
     # ====================================================================
     # DEFAULT REFLECTOR LIST MANAGEMENT
     # ====================================================================
 
     def _load_default_reflectors_from_file(self) -> List[str]:
-        fp = Path(self._DEFAULT_REFLECTORS_FILE)
-        if fp.exists():
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                return data.get("default_reflectors", [])
-            except (json.JSONDecodeError, IOError):
-                return []
-        return []
+        seen: List[str] = []
+        for entry in _load_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors"):
+            normalized = _normalize_reflector_entry(str(entry))
+            if normalized not in seen:
+                seen.append(normalized)
+        return seen
 
     def _save_default_reflectors_to_file(self, reflector_files: List[str]) -> None:
-        fp = Path(self._DEFAULT_REFLECTORS_FILE)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fp.write_text(
-                json.dumps({"default_reflectors": reflector_files}, indent=2),
-                encoding="utf-8",
-            )
-        except IOError:
-            pass
+        normalized: List[str] = []
+        for entry in reflector_files:
+            path = _normalize_reflector_entry(str(entry))
+            if path not in normalized:
+                normalized.append(path)
+        _save_json_list(DEFAULT_REFLECTORS_FILE, "default_reflectors", normalized)
 
     def get_default_reflector_files(self) -> List[str]:
-        if "default_reflector_files" not in self._store:
-            self._store["default_reflector_files"] = self._load_default_reflectors_from_file()
-        return self._store.get("default_reflector_files", [])
+        return self._default_reflector_files
 
     def is_default_reflector(self, source_file: str) -> bool:
-        return source_file in self.get_default_reflector_files()
+        return _normalize_reflector_entry(
+            source_file) in self.get_default_reflector_files()
 
     def add_to_default_reflectors(self, source_file: str) -> None:
-        current = self.get_default_reflector_files()
-        if source_file not in current:
-            current.append(source_file)
-            self._store["default_reflector_files"] = current
-            self._save_default_reflectors_to_file(current)
-            self._notify("default_reflector_files")
-
-    def remove_from_default_reflectors(self, source_file: str) -> None:
-        current = self.get_default_reflector_files()
-        if source_file in current:
-            current.remove(source_file)
-            self._store["default_reflector_files"] = current
-            self._save_default_reflectors_to_file(current)
-            self._notify("default_reflector_files")
+        entry = _normalize_reflector_entry(source_file)
+        if entry not in self._default_reflector_files:
+            self._default_reflector_files.append(entry)
+            self._save_default_reflectors_to_file(self._default_reflector_files)
 
     def seed_isdefault_reflectors(self, reflector_collection: Any) -> None:
         if not reflector_collection or not hasattr(reflector_collection, "reflectors"):
@@ -488,126 +276,52 @@ class StateManager:
     # MY FILTERS (OWNED FILTERS) MANAGEMENT
     # ====================================================================
 
-    _MY_FILTERS_FILE = MY_FILTERS_FILE
-
     def _load_my_filters_from_file(self) -> List[str]:
-        fp = Path(self._MY_FILTERS_FILE)
-        if fp.exists():
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                return data.get("my_filters", [])
-            except (json.JSONDecodeError, IOError):
-                return []
-        return []
+        return _load_json_list(MY_FILTERS_FILE, "my_filters")
 
     def _save_my_filters_to_file(self, filter_names: List[str]) -> None:
-        fp = Path(self._MY_FILTERS_FILE)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fp.write_text(
-                json.dumps({"my_filters": sorted(filter_names)}, indent=2),
-                encoding="utf-8",
-            )
-        except IOError:
-            pass
+        _save_json_list(MY_FILTERS_FILE, "my_filters", sorted(filter_names))
 
-    def get_my_filters(self) -> List[str]:
-        if "_my_filters_set" not in self._store:
-            self._store["_my_filters_set"] = set(self._load_my_filters_from_file())
-        return self._store["_my_filters_set"]
-
-    def get_my_filters_count(self) -> int:
-        return len(self.get_my_filters())
+    def get_my_filters(self) -> set:
+        return self._my_filters_set
 
     def is_my_filter(self, display_name: str) -> bool:
-        return display_name in self.get_my_filters()
+        return display_name in self._my_filters_set
 
     def add_to_my_filters(self, display_name: str) -> None:
-        current = self.get_my_filters()
-        if display_name not in current:
-            current.add(display_name)
-            self._save_my_filters_to_file(list(current))
-            self._notify("my_filters")
+        if display_name not in self._my_filters_set:
+            self._my_filters_set.add(display_name)
+            self._save_my_filters_to_file(list(self._my_filters_set))
 
     def remove_from_my_filters(self, display_name: str) -> None:
-        current = self.get_my_filters()
-        if display_name in current:
-            current.discard(display_name)
-            self._save_my_filters_to_file(list(current))
-            self._notify("my_filters")
+        if display_name in self._my_filters_set:
+            self._my_filters_set.discard(display_name)
+            self._save_my_filters_to_file(list(self._my_filters_set))
 
     def add_manufacturer_to_my_filters(self, manufacturer: str, filter_collection) -> int:
         """Add all filters from a manufacturer. Returns count added."""
         added = 0
-        current = self.get_my_filters()
         for f in filter_collection.filters:
             name = str(f)
-            if f.manufacturer == manufacturer and name not in current:
-                current.add(name)
+            if f.manufacturer == manufacturer and name not in self._my_filters_set:
+                self._my_filters_set.add(name)
                 added += 1
         if added:
-            self._save_my_filters_to_file(list(current))
-            self._notify("my_filters")
+            self._save_my_filters_to_file(list(self._my_filters_set))
         return added
 
     def remove_manufacturer_from_my_filters(self, manufacturer: str, filter_collection) -> int:
         """Remove all filters from a manufacturer. Returns count removed."""
         removed = 0
-        current = self.get_my_filters()
         for f in filter_collection.filters:
             name = str(f)
-            if f.manufacturer == manufacturer and name in current:
-                current.discard(name)
+            if f.manufacturer == manufacturer and name in self._my_filters_set:
+                self._my_filters_set.discard(name)
                 removed += 1
         if removed:
-            self._save_my_filters_to_file(list(current))
-            self._notify("my_filters")
+            self._save_my_filters_to_file(list(self._my_filters_set))
         return removed
 
     def clear_all_my_filters(self) -> None:
-        self._store["_my_filters_set"] = set()
+        self._my_filters_set = set()
         self._save_my_filters_to_file([])
-        self._notify("my_filters")
-
-    @property
-    def my_filters_only(self) -> bool:
-        return self._store.get("my_filters_only", False)
-
-    @my_filters_only.setter
-    def my_filters_only(self, value: bool) -> None:
-        self._set("my_filters_only", value)
-
-    @property
-    def show_my_filters_manager(self) -> bool:
-        return self._store.get("show_my_filters_manager", False)
-
-    @show_my_filters_manager.setter
-    def show_my_filters_manager(self, value: bool) -> None:
-        self._set("show_my_filters_manager", value)
-
-    # ====================================================================
-    # GENERIC STORE ACCESS (for cases where direct key access is needed)
-    # ====================================================================
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a value from the backing store."""
-        return self._store.get(key, default)
-
-    def set(self, key: str, value: Any) -> None:
-        """Set a value in the backing store and fire listeners."""
-        self._set(key, value)
-
-
-# ============================================================================
-# GLOBAL INSTANCE
-# ============================================================================
-
-_state_manager: Optional[StateManager] = None
-
-
-def get_state_manager() -> StateManager:
-    """Get or create the global state manager singleton."""
-    global _state_manager
-    if _state_manager is None:
-        _state_manager = StateManager()
-    return _state_manager
